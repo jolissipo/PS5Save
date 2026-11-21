@@ -27,7 +27,12 @@ static struct dirent *host_readdir(DIR *dir);
 #define SOURCE TEST_ROOT "/save.dat"
 #define OVERSIZED TEST_ROOT "/oversized.dat"
 #define MISSING TEST_ROOT "/missing.dat"
+#define EMPTY TEST_ROOT "/empty"
+#define NESTED TEST_ROOT "/nested"
 #define ACTIVITY_PATH TEST_ROOT "/activity"
+#define CHECKING "Checking for backup changes."
+#define COPYING "Changes found. Backing up."
+#define NO_CHANGES "No changes. Backup not needed."
 #define LOG_CAPACITY 256
 
 static pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -120,6 +125,13 @@ toast_count(const char *text) {
   return count;
 }
 
+static void
+expect_toast(unsigned index, const char *text) {
+  pthread_mutex_lock(&capture_mutex);
+  assert(index < sent && strstr(toasts[index], text));
+  pthread_mutex_unlock(&capture_mutex);
+}
+
 static int
 log_contains(const char *text) {
   for(unsigned i = 0; i < logged; i++)
@@ -160,50 +172,37 @@ test_legacy(void) {
   cycle_with_config("  interval = 120 \r\n  max_game_mb = 64 \n"
                     "dailybackups=0\nps4saves=false\nps5saves=false\n" SOURCE "\n");
   assert(g_interval == 120 && g_max_game == 64 * BYTES_PER_MB);
-  assert(toast_count("Backup utility started") == 1);
-  assert(toast_count("Backing up") == 1 && toast_count("complete") == 1);
-  assert(progress_interval == 30);
+  assert(toast_count(NULL) == 3);
+  expect_toast(0, CHECKING);
+  expect_toast(1, COPYING);
+  expect_toast(2, "Backup complete");
   expect_file(BACKUP_ROOT SOURCE, "original");
-  unsigned before = toast_count(NULL);
   assert(run_cycle(0) == 0);
-  assert(toast_count(NULL) == before && log_contains("up to date"));
-}
-
-static void
-expect_progress_interval(unsigned seconds) {
-  progress_reset();
-  g_backup_busy = 0;
-  progress_plan(1);
-  progress_begin(100);
-  backup_activity_begin();
-  assert(progress_live == (seconds != 0));
-  if(seconds) assert(progress_interval == seconds);
-  progress_reset();
+  assert(toast_count(NULL) == 5);
+  expect_toast(3, CHECKING);
+  expect_toast(4, NO_CHANGES);
 }
 
 static void
 test_settings(void) {
   cycle_with_config("backup_notifications=invalid\n"
                     "backup_notifications_in_game=invalid\n"
-                    "backup_progress_interval_seconds=4\n");
-  assert(log_contains("invalid") && log_contains("4"));
-  expect_progress_interval(30);
-  cycle_with_config("backup_notifications=all\nbackup_progress_interval_seconds=0\n");
-  expect_progress_interval(0);
-  cycle_with_config(" backup_progress_interval_seconds = 5 \t\r\n"
-                    "backup_progress_interval_seconds=3601\n"
-                    "backup_progress_interval_seconds=30junk\n");
-  expect_progress_interval(5);
-  cycle_with_config("backup_progress_interval_seconds=3600\n");
-  expect_progress_interval(3600);
-  cycle_with_config("backup_notifications=errors\nbackup_progress_interval_seconds=5\n");
-  expect_progress_interval(0);
+                    "backup_progress_interval_seconds=retired-value\n");
+  assert(log_contains("Invalid backup_notifications") && log_contains("Invalid boolean"));
+  assert(!log_contains("retired-value"));
+  assert(notification_settings.mode == NOTICES_ALL && notification_settings.in_game);
+  cycle_with_config(" backup_notifications = errors \t\r\n"
+                    " backup_notifications_in_game = false \n"
+                    "backup_notifications_in_game=invalid\n");
+  assert(notification_settings.mode == NOTICES_ERRORS && !notification_settings.in_game);
+  assert(!notification_allowed(NOTICE_INFO) && notification_allowed(NOTICE_WARNING));
   cycle_with_config("backup_notifications=off\nbackup_notifications=INVALID\n");
   unsigned before = toast_count(NULL);
   notify_info("Must stay muted");
   assert(toast_count(NULL) == before);
   cycle_with_config("");
-  expect_progress_interval(30);
+  assert(notification_settings.mode == NOTICES_ALL && notification_settings.in_game);
+  assert(notification_allowed(NOTICE_INFO));
 }
 
 static void
@@ -215,7 +214,7 @@ test_errors(void) {
   expect_file(BACKUP_ROOT SOURCE, "first version");
   assert(toast_count("oversized.dat") == 1);
   assert(log_contains("WARNING: File too large"));
-  assert(toast_count("started") == 0 && toast_count("complete") == 0);
+  assert(!toast_count(CHECKING) && !toast_count(COPYING) && !toast_count("Backup complete"));
 
   write_text(SOURCE, "second, longer version");
   assert(!setenv("TEST_USB_FREE", "0", 1));
@@ -237,6 +236,10 @@ test_errors(void) {
   write_text(SOURCE, "third version after recovery");
   assert(run_cycle(0) == 0);
   assert(toast_count("USB space") == 2);
+
+  cycle_with_config(SOURCE "\nbackup_notifications=all\n");
+  cycle_with_config(OVERSIZED "\nbackup_notifications=all\n");
+  assert(toast_count(CHECKING) == 2 && !toast_count(NO_CHANGES));
 }
 
 static void
@@ -297,6 +300,8 @@ test_protection(void) {
   cycle_with_config("backup_ps5_saves=true\nbackup_notifications_in_game=false\n");
   assert(pending_find("1", title, 1));
   assert(!toast_count(NULL) && activity.count == 1);
+  cycle_with_config("backup_ps5_saves=true\nbackup_notifications_in_game=true\n");
+  assert(toast_count(CHECKING) == 1 && !toast_count(NO_CHANGES));
   double checked = activity.checked;
 
   write_text(ACTIVITY_PATH, "");
@@ -306,13 +311,41 @@ test_protection(void) {
 }
 
 static void
+test_empty(void) {
+  assert(!mkdir_p(EMPTY) && !mkdir_p(NESTED "/subdir"));
+  cycle_with_config(EMPTY "\n" NESTED "/\nbackup_notifications=all\n");
+  assert(toast_count("No files to back up in empty.") == 1);
+  assert(toast_count("No files to back up in nested.") == 1);
+  assert(!toast_count(NO_CHANGES) && !toast_count(COPYING));
+
+  assert(run_cycle(0) == 0);
+  assert(toast_count("No files to back up in") == 2 && !toast_count(NO_CHANGES));
+
+  write_text(EMPTY "/save", "save in previously empty folder");
+  write_text(NESTED "/subdir/save", "save in nested folder");
+  assert(run_cycle(0) == 0);
+  expect_file(BACKUP_ROOT EMPTY "/save", "save in previously empty folder");
+  expect_file(BACKUP_ROOT NESTED "/subdir/save", "save in nested folder");
+
+  assert(run_cycle(0) == 0);
+  assert(toast_count(NO_CHANGES) == 1 && toast_count("No files to back up in") == 2);
+
+  assert(!unlink(EMPTY "/save"));
+  assert(run_cycle(0) == 0);
+  assert(toast_count("No files to back up in empty.") == 2);
+  assert(toast_count(NO_CHANGES) == 1);
+  expect_file(BACKUP_ROOT EMPTY "/save", "save in previously empty folder");
+}
+
+static void
 test_read_error(void) {
   const char *directory = TEST_ROOT "/unreadable";
   assert(!mkdir_p(directory));
   write_text(TEST_ROOT "/unreadable/save", "directory save");
   fail_readdir_path = directory;
-  cycle_with_config(TEST_ROOT "/unreadable\nbackup_notifications=errors\n");
+  cycle_with_config(TEST_ROOT "/unreadable\nbackup_notifications=all\n");
   assert(toast_count("Backup cannot read") == 1 && log_contains("Backup incomplete"));
+  assert(!toast_count("No files to back up in") && !toast_count(NO_CHANGES));
   assert(access(BACKUP_ROOT TEST_ROOT "/unreadable/save", F_OK) != 0);
   fail_readdir_path = NULL;
   assert(run_cycle(0) == 0);
@@ -335,14 +368,19 @@ test_snapshot(void) {
   assert(access(snapshot, F_OK) != 0 && toast_count("snapshot could not be saved") == 1);
   expect_file(BACKUP_ROOT SOURCE, "snapshot version");
   fail_readdir_path = NULL;
-  assert(run_cycle(0) == 0);
+  cycle_with_config(SOURCE "\ndaily_snapshots_to_keep=2\nbackup_notifications=all\n");
+  assert(toast_count(NULL) == 4);
+  expect_toast(1, CHECKING);
+  expect_toast(2, "Creating daily snapshot.");
+  expect_toast(3, "Daily snapshot complete.");
+  assert(!toast_count(NO_CHANGES) && !toast_count(COPYING));
   expect_file(saved_file, "snapshot version");
 
   write_text(SOURCE, "new live version");
-  assert(run_cycle(0) == 0);
+  cycle_with_config(config);
   expect_file(BACKUP_ROOT SOURCE, "new live version");
   expect_file(saved_file, "snapshot version");
-  assert(toast_count(NULL) == 1 && log_contains("created"));
+  assert(toast_count(NULL) == 4 && log_contains("created"));
 }
 
 static void
@@ -377,14 +415,18 @@ test_progress(void) {
   progress_begin(100);
   progress_advance(35);
   double started = now_seconds();
-  progress_start(1, record_progress);
+  progress_start(record_progress);
   wait_for_progress(1);
-  assert(now_seconds() - started >= 0.95 && !toast_count(NULL));
+  assert(now_seconds() - started >= 0.95 && !toast_count(NULL) && log_contains("25%"));
   write_text(ACTIVITY_PATH, "");
   progress_advance(30);
   wait_for_progress(2);
-  assert(toast_count(NULL) == 1 && toast_count("65%") == 1);
+  assert(toast_count(NULL) == 1 && toast_count("50%") == 1);
   assert(toast_times[0] - started >= 1.95);
+  progress_advance(20);
+  wait_for_progress(3);
+  assert(toast_count(NULL) == 2 && toast_count("75%") == 1);
+  assert(toast_times[1] - toast_times[0] >= 0.95);
   progress_finish();
   progress_stop();
   assert(!progress_live && !toast_count("100%"));
@@ -440,6 +482,7 @@ main(int argc, char **argv) {
   else if(!strcmp(argv[1], "off")) test_off();
   else if(!strcmp(argv[1], "gameplay")) test_gameplay();
   else if(!strcmp(argv[1], "protection")) test_protection();
+  else if(!strcmp(argv[1], "empty")) test_empty();
   else if(!strcmp(argv[1], "read-error")) test_read_error();
   else if(!strcmp(argv[1], "snapshot")) test_snapshot();
   else if(!strcmp(argv[1], "progress")) test_progress();

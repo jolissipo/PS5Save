@@ -25,7 +25,6 @@ along with this program; see the file COPYING. If not, see
  *   backup_interval_seconds=60      seconds between backups (default 60)
  *   backup_notifications=all       all, errors or off (default all)
  *   backup_notifications_in_game=true  allow toasts during possible game activity
- *   backup_progress_interval_seconds=30  seconds between progress checks (0 disables)
  *   backup_ps4_saves=true           enable decrypted PS4 saves (default false)
  *   backup_ps5_saves=true           enable decrypted PS5 saves (default false)
  *   backup_encrypted_saves=true     copy original PS4 and PS5 save files
@@ -167,7 +166,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "jolissipo-v1.0.0"
+#define PS5SAVE_RELEASE "jolissipo-v1.1.0"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -252,6 +251,7 @@ typedef struct backup_stats {
   unsigned copied;
   unsigned unchanged;
   unsigned skipped;
+  unsigned empty_sources;
   unsigned failed;
 } backup_stats_t;
 
@@ -280,7 +280,6 @@ static int g_mount_stuck = 0;
 static int g_watch_game = 0;      /* protect the currently mounted title */
 static int g_game_abort = 0;      /* abort this save image only */
 static int g_backup_busy = 0;     /* one activity warning per copying pass */
-static int g_start_notified = 0;  /* one startup notification per process */
 static double g_last_watch = 0;
 static char g_abort_why[192];
 
@@ -293,10 +292,9 @@ typedef enum { NOTICE_INFO, NOTICE_WARNING, NOTICE_ERROR } notice_level_t;
 typedef struct {
   notice_mode_t mode;
   int in_game;
-  unsigned progress_seconds;
 } notification_settings_t;
 
-#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 1, 30}
+#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 1}
 static const notification_settings_t notification_defaults = DEFAULT_NOTIFICATION_SETTINGS;
 static notification_settings_t notification_settings = DEFAULT_NOTIFICATION_SETTINGS;
 
@@ -516,21 +514,20 @@ notification_issues_end(void) {
 
 static void
 notify_progress(unsigned percent) {
-  notify_info("Backing up... (%u%%)", percent);
+  notify_info("Backup progress: %u%%", percent);
 }
 
 #include "backup_progress.h"
 
 
-/* Announce actual copy work once per pass, including save-image staging
- * and daily snapshot copies. Unchanged/scanning-only passes stay quiet. */
+/* Announce the first copy operation, including a snapshot-only pass. */
 static void
-backup_activity_begin(void) {
+backup_activity_begin(const char *message) {
   if(!g_backup_busy) {
     g_backup_busy = 1;
-    notify_info("Backing up. Keep the USB connected.");
+    notify_info("%s", message);
     if(notification_allowed(NOTICE_INFO))
-      progress_start(notification_settings.progress_seconds, notify_progress);
+      progress_start(notify_progress);
   }
 }
 
@@ -850,7 +847,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
     progress_begin(st->st_size);
     progress_started = 1;
   }
-  backup_activity_begin();
+  backup_activity_begin("Changes found. Backing up.");
   operation = "open USB file";
   if((out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0) {
     goto done;
@@ -966,20 +963,23 @@ is_backup_root(const struct stat *st) {
 
 /**
  * Back up everything below the directory src into dst, recursively.
+ * When given the source stat, return true only for a verified empty tree.
  **/
-static void
-backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
+static int
+backup_tree(const char *src, const char *dst, backup_stats_t *stats,
+            const struct stat *source) {
   char spath[PATH_MAX];
   char dpath[PATH_MAX];
   struct dirent *dp;
   struct stat st;
   DIR *dir;
+  int empty = source != NULL;
 
   const char *label = dst + strlen(BACKUP_ROOT);
   if(!(dir = opendir(src))) {
     backup_scan_error("open-directory", label, src, errno);
     stats->failed++;
-    return;
+    return 0;
   }
 
   while((dp = backup_readdir(dir, label, src)) && !(g_watch_game && g_game_abort)) {
@@ -989,6 +989,7 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
 
     if(snprintf(spath, sizeof spath, "%s/%s", src, dp->d_name) >= (int)sizeof spath ||
        snprintf(dpath, sizeof dpath, "%s/%s", dst, dp->d_name) >= (int)sizeof dpath) {
+      empty = 0;
       if(!g_progress_planning) {
         logq("Backup path too long: %s/%s", src, dp->d_name);
         notify_problem(NOTICE_ERROR, "backup-path-length", label,
@@ -999,6 +1000,7 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
     }
 
     if(lstat(spath, &st)) {
+      empty = 0;
       backup_scan_error("stat-file", dpath + strlen(BACKUP_ROOT), spath, errno);
       stats->failed++;
       continue;
@@ -1009,18 +1011,24 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
        * is one of its ancestors. Skip it by identity, not by name, so the
        * walk stops here instead of recursing into the growing backup. */
       if(is_backup_root(&st)) {
+        empty = 0;
         logq("Skipping backup destination %s", spath);
         continue;
       }
-      backup_tree(spath, dpath, stats);
+      empty = backup_tree(spath, dpath, stats, empty ? &st : NULL);
     } else if(S_ISREG(st.st_mode)) {
+      empty = 0;
       backup_file(spath, dpath, &st, stats);
     }
     /* symlinks and special files are ignored */
   }
 
-  if(!dp && errno && !g_progress_planning) stats->failed++;
-  closedir(dir);
+  int read_error = !dp && errno;
+  if(read_error && !g_progress_planning) stats->failed++;
+  if(closedir(dir) || !empty || dp || read_error) return 0;
+
+  /* A concurrent creation, removal or replacement can invalidate an empty scan. */
+  return !stat(src, &st) && source_same(source, &st);
 }
 
 
@@ -1123,7 +1131,7 @@ copy_plain(const char *src, const char *dst) {
   if((in = open(src, O_RDONLY)) < 0) {
     return -1;
   }
-  backup_activity_begin();
+  backup_activity_begin("Changes found. Backing up.");
   if((out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0777)) < 0) {
     close(in);
     return -1;
@@ -1437,7 +1445,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   progress_stage(dir_size(MOUNT_POINT), 0.5, 0.5);
   failed_before = stats->failed;
   g_file_cap = 0;     /* the whole game was already judged against its limit */
-  backup_tree(MOUNT_POINT, dst_dir, stats);
+  backup_tree(MOUNT_POINT, dst_dir, stats, NULL);
   g_file_cap = MAX_FILE_SZ;
 
   game_watch();
@@ -1747,7 +1755,7 @@ backup_console_dir(const char *src, backup_stats_t *stats) {
     stats->failed++;
     return;
   }
-  backup_tree(src, dst, stats);
+  backup_tree(src, dst, stats, NULL);
 }
 
 
@@ -1892,14 +1900,17 @@ notification_config_entry(const char *line, notification_settings_t *settings) {
     else logq("Invalid backup_notifications: %s (expected all, errors or off)", value);
   } else if((value = config_value(line, "backup_notifications_in_game", NULL))) {
     parse_bool(value, &settings->in_game);
-  } else if((value = config_value(line, "backup_progress_interval_seconds", NULL))) {
-    long seconds;
-    if(config_number(value, 0, 3600, &seconds)) {
-      if(seconds && seconds < 5)
-        logq("Invalid backup_progress_interval_seconds: %s (expected 0 or 5..3600)", value);
-      else settings->progress_seconds = (unsigned)seconds;
-    }
   }
+}
+
+static int
+notification_config_read(FILE *f) {
+  notification_settings_t settings = notification_defaults;
+  char line[PATH_MAX + 16];
+  while(fgets(line, sizeof line, f)) notification_config_entry(config_trim(line), &settings);
+  if(ferror(f)) return 0;
+  notification_settings = settings;
+  return 1;
 }
 
 /* Read the policy even if the payload cannot start a backup pass. */
@@ -1907,10 +1918,7 @@ static void
 notification_config_on_startup_error(void) {
   FILE *f = fopen(CONF_PATH, "r");
   if(!f) return;
-  notification_settings_t settings = notification_defaults;
-  char line[PATH_MAX + 16];
-  while(fgets(line, sizeof line, f)) notification_config_entry(config_trim(line), &settings);
-  if(!ferror(f)) notification_settings = settings;
+  notification_config_read(f);
   fclose(f);
 }
 
@@ -2044,7 +2052,15 @@ backup_entry(char *line, backup_stats_t *stats) {
   }
 
   if(S_ISDIR(st.st_mode)) {
-    backup_tree(line, dst, stats);
+    if(backup_tree(line, dst, stats, g_progress_planning ? NULL : &st)) {
+      stats->empty_sources++;
+      const char *end = line + len;
+      while(end > line && end[-1] == '/') end--;
+      const char *name = end;
+      while(name > line && name[-1] != '/') name--;
+      notify_problem(NOTICE_WARNING, "empty-source", line, "No files to back up in %.*s.",
+                     (int)(end - name), name);
+    }
   } else if(S_ISREG(st.st_mode)) {
     backup_file(line, dst, &st, stats);
   }
@@ -2308,7 +2324,6 @@ daily_prune(const char *today) {
   struct stat st;
   int n = 0;
   int ns = 0;
-  unsigned removed = 0;
   DIR *dir;
 
   names = malloc((size_t)MAX_DAILY_DIRS * sizeof *names);
@@ -2352,7 +2367,6 @@ daily_prune(const char *today) {
     snprintf(path, sizeof path, "%s/%s", DAILY_ROOT, names[i]);
     if(!remove_tree(path)) {
       logq("Daily backup %s deleted (keeping newest %d)", names[i], g_daily);
-      removed++;
     } else {
       notify_problem(NOTICE_WARNING, "daily-prune", names[i], "Could not remove an old snapshot.");
     }
@@ -2360,17 +2374,16 @@ daily_prune(const char *today) {
 
   free(names);
   free(stale);
-  if(removed)
-    notify_info("Removed %u old daily snapshot%s.", removed, removed == 1 ? "" : "s");
 }
 
 
 /**
  * Create today's snapshot if there is none yet. Called after every live
  * backup pass, which covers every payload start, every wake-up from rest mode
- * and the midnight wake-up.
+ * and the midnight wake-up. Returns 1 for a saved snapshot, 0 when no
+ * snapshot is needed or possible yet, and -1 if a snapshot is skipped or fails.
  **/
-static void
+static int
 daily_check(void) {
   char final[PATH_MAX];
   char part[PATH_MAX];
@@ -2383,7 +2396,7 @@ daily_check(void) {
   uint64_t need;
 
   if(g_daily <= 0) {
-    return;
+    return 0;
   }
 
   local_clock(wall_clock(), &ci);
@@ -2394,12 +2407,12 @@ daily_check(void) {
   /* one snapshot per date: an existing one is never wiped or refreshed */
   if(!stat(final, &st) && S_ISDIR(st.st_mode)) {
     daily_prune(ci.date);
-    return;
+    return 0;
   }
 
   if(stat(BACKUP_ROOT, &st) || !S_ISDIR(st.st_mode)) {
     logq("Daily backup %s skipped: no live backup to copy yet", ci.date);
-    return;
+    return 0;
   }
 
   need = dir_size(BACKUP_ROOT) + SPACE_MARGIN;
@@ -2408,11 +2421,11 @@ daily_check(void) {
     format_size(usb_free(), b, sizeof b);
     logq("Not enough space on USB for daily backup %s (need ~%s, free %s)", ci.date, a, b);
     notify_problem(NOTICE_WARNING, "usb-space", NULL, "Not enough USB space for backups.");
-    return;
+    return -1;
   }
 
   progress_begin(need - SPACE_MARGIN);
-  backup_activity_begin();
+  backup_activity_begin("Creating daily snapshot.");
   mkdir_p(DAILY_ROOT);
   remove_tree(part);                     /* leftover of an interrupted copy */
 
@@ -2423,14 +2436,14 @@ daily_check(void) {
     remove_tree(part);
     logq("Failed to create daily backup %s", ci.date);
     notify_problem(NOTICE_ERROR, "daily-copy", NULL, "Daily snapshot could not be saved.");
-    return;
+    return -1;
   }
 
   progress_finish();
   format_size(bytes, a, sizeof a);
   logq("Daily backup %s created (%s, console time %s)", ci.date, a, tz);
-  notify_info("Daily snapshot saved.");
   daily_prune(ci.date);
+  return 1;
 }
 
 
@@ -2456,7 +2469,7 @@ next_due(double started) {
 
 /**
  * Run one backup pass. Returns -1 if backup.conf could not be opened,
- * or -2 if it could not be rewound to run the copy pass.
+ * or -2 if it could not be read or rewound for the next scan.
  **/
 static int
 run_cycle(int pending_only) {
@@ -2466,7 +2479,6 @@ run_cycle(int pending_only) {
   pid_t pid = getpid();
   double start;
   FILE *f;
-  notification_settings_t settings = notification_defaults;
 
   /* escape the jail so that /data and /mnt/usb0 are reachable; done on every
    * cycle in case the state was reset while the console was suspended */
@@ -2478,6 +2490,15 @@ run_cycle(int pending_only) {
   }
 
   progress_reset();
+  /* Apply the policy before sending the scan status, including when it is
+   * declared after file paths in backup.conf. This pass reads only settings. */
+  if(!notification_config_read(f) || fseek(f, 0, SEEK_SET)) {
+    logq("Cannot read or rewind %s: %s", CONF_PATH, strerror(errno));
+    fclose(f);
+    return -2;
+  }
+  notification_issues_begin(pending_only);
+  notify_info("Checking for backup changes.");
   index_load();
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
@@ -2497,12 +2518,9 @@ run_cycle(int pending_only) {
 
   g_progress_planning = 1;
   while(fgets(line, sizeof line, f)) {
-    char *entry = config_trim(line);
-    notification_config_entry(entry, &settings);
-    backup_entry(entry, &stats);
+    backup_entry(config_trim(line), &stats);
   }
   int config_read_failed = ferror(f);
-  if(!config_read_failed) notification_settings = settings;
   backup_saves(&stats);
   if(!g_pending_only && g_daily > 0) {
     clock_info_t ci;
@@ -2519,11 +2537,6 @@ run_cycle(int pending_only) {
     logq("Cannot rewind %s: %s", CONF_PATH, strerror(errno));
     fclose(f);
     return -2;
-  }
-  notification_issues_begin(pending_only);
-  if(!g_start_notified) {
-    notify_info("Backup utility started.");
-    g_start_notified = 1;
   }
   memset(&stats, 0, sizeof stats);
   g_interval = DEF_INTERVAL;
@@ -2547,23 +2560,32 @@ run_cycle(int pending_only) {
 
   /* Regular files have already been processed. A deferred save-image pass
    * must not prevent a snapshot of the available live backup. */
+  int live_work_started = g_backup_busy;
   index_save();
-  if(!g_pending_only) daily_check();
+  int snapshot_result = g_pending_only ? 0 : daily_check();
   progress_stop();
   if(!pending_only && !g_cycle_deferred && !g_mount_stuck && !config_read_failed)
     notification_issues_end();
 
 
-  if(stats.failed) {
+  if(stats.failed || notification_cycle_failed) {
     logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
-  } else if(stats.copied) {
-    format_size(stats.bytes, size, sizeof size);
-    logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
-    if(!notification_cycle_failed) notify_info("Backup complete (%s).", size);
   } else if(g_cycle_deferred) {
     logq("Backup pass finished; protected titles queued (%u files unchanged)", stats.unchanged);
+    notify_info(live_work_started || snapshot_result > 0 ?
+                "Backup finished with deferred saves." : "Save backup deferred.");
+  } else if(stats.skipped || snapshot_result < 0) {
+    logq("Backup pass finished with skips (%u files skipped)", stats.skipped);
+    if(live_work_started || snapshot_result > 0) notify_info("Backup finished. Some data was skipped.");
+  } else if(live_work_started) {
+    format_size(stats.bytes, size, sizeof size);
+    logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
+    notify_info("Backup complete (%s).", size);
+  } else if(snapshot_result > 0) {
+    notify_info("Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
+    if(!stats.empty_sources) notify_info("No changes. Backup not needed.");
   }
 
   return 0;
@@ -2572,7 +2594,7 @@ run_cycle(int pending_only) {
 static void
 report_config_error(int result) {
   if(result == -2)
-    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not reread backup.conf on USB.");
+    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not read backup.conf on USB.");
   else
     notify_problem(NOTICE_ERROR, "config-open", NULL, "Could not open backup.conf on USB.");
 }

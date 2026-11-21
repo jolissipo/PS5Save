@@ -14,11 +14,11 @@ fi
 
 # The host struct stat uses POSIX field names for these timestamps.
 ${CC:-cc} ${CFLAGS:-} -std=c11 -D_DEFAULT_SOURCE -UNDEBUG -Wall -Wextra -Werror -pthread "$@" \
-  -Dst_mtimespec=st_mtim -Dst_ctimespec=st_ctim \
+  -Dst_mtimespec=st_mtim -Dst_ctimespec=st_ctim -DPROGRESS_INTERVAL_SECONDS=1 \
   -DTEST_ROOT="\"$test_dir/fixture\"" -Itests/include \
   tests/notifications.c -o "$test_dir/notifications"
 
-for scenario in legacy settings errors off gameplay protection read-error snapshot progress concurrent; do
+for scenario in legacy settings errors off gameplay protection empty read-error snapshot progress concurrent; do
   rm -rf "$test_dir/fixture"
   if "$test_dir/notifications" "$scenario" >"$test_dir/log" 2>&1; then
     printf 'PASS %s\n' "$scenario"

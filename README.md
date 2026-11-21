@@ -14,20 +14,23 @@ Decrypted saves from active or suspended titles are deferred until the title clo
 
 ## Notifications
 
-The example configuration shows warnings and errors when no game or app activity is detected.
+The example enables all save and trophy backup options and shows notifications during gameplay.
 
 ```ini
-backup_notifications=errors
-backup_notifications_in_game=false
+backup_notifications=all
+backup_notifications_in_game=true
 ```
 
 | Setting | Values | Default when omitted |
 | --- | --- | --- |
 | `backup_notifications` | `all` for status, progress, warnings and errors. `errors` for warnings and errors. `off` for visual silence. | `all` |
 | `backup_notifications_in_game` | `true` follows the selected mode. `false` mutes toasts during possible game or app activity. | `true` |
-| `backup_progress_interval_seconds` | `5`–`3600` seconds between progress checks, or `0` to disable them. Applies in `all` mode. | `30` |
 
-Progress updates follow the 25%, 50% and 75% milestones, with at most one toast per interval. Unchanged backups stay quiet after startup. Warnings and errors remain in the logs, including when toasts are muted.
+In `all` mode, each pass shows **Checking for backup changes**. An unchanged source set reports **No changes. Backup not needed.** A pass with new data shows **Changes found. Backing up.** when copying starts and **Backup complete** on success. A snapshot-only pass has its own status. Empty configured folders report their name. Unreadable sources and skipped work report separate messages.
+
+Progress shows up to three milestones at 25%, 50% and 75%. The first progress toast can appear after 30 seconds of copying, and additional progress toasts are at least 30 seconds apart. When several milestones are reached together, only the latest is shown. The previous `backup_progress_interval_seconds` setting is retired. Warnings and errors remain in the logs in every mode.
+
+The PS5 controls pop-up duration through **Settings → Notifications → Display Time**. How this setting affects PS5Save's custom toasts still needs console validation. [PlayStation support](https://www.playstation.com/en-gb/support/account/manage-notifications-ps5/#settings)
 
 The activity check can also mute toasts for suspended titles or when the activity state is unknown. The policy reloads on backup passes and stays in effect if the USB becomes unavailable. A first startup with an unreadable configuration uses the defaults.
 

@@ -7,13 +7,17 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#ifndef PROGRESS_INTERVAL_SECONDS
+#define PROGRESS_INTERVAL_SECONDS 30
+#endif
+
 static pthread_mutex_t progress_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t progress_cond;
 static pthread_t progress_thread;
 static int progress_live, progress_running, progress_current;
 static uint64_t progress_total, progress_completed, progress_bytes, progress_target;
 static double progress_offset, progress_span;
-static unsigned progress_last, progress_interval;
+static unsigned progress_last;
 static void (*progress_emit)(unsigned percent);
 static int g_progress_planning, g_progress_image;
 
@@ -47,7 +51,7 @@ progress_worker(void *arg) {
   while(progress_running && last_milestone < 3) {
     struct timespec deadline;
     if(clock_gettime(CLOCK_MONOTONIC, &deadline)) break;
-    deadline.tv_sec += progress_interval;
+    deadline.tv_sec += PROGRESS_INTERVAL_SECONDS;
     int rc = 0;
     while(progress_running && rc == 0)
       rc = pthread_cond_timedwait(&progress_cond, &progress_mutex, &deadline);
@@ -57,7 +61,7 @@ progress_worker(void *arg) {
     unsigned percent = progress_percent_locked();
     if(!progress_milestone(percent, &last_milestone)) continue;
     pthread_mutex_unlock(&progress_mutex);
-    progress_emit(percent);
+    progress_emit(last_milestone * 25);
     pthread_mutex_lock(&progress_mutex);
   }
   pthread_mutex_unlock(&progress_mutex);
@@ -92,8 +96,8 @@ progress_plan(uint64_t count) {
 }
 
 static void
-progress_start(unsigned interval_seconds, void (*emit)(unsigned percent)) {
-  if(progress_live || !interval_seconds) return;
+progress_start(void (*emit)(unsigned percent)) {
+  if(progress_live) return;
   pthread_condattr_t attr;
   int rc = pthread_condattr_init(&attr);
   if(!rc) {
@@ -105,7 +109,6 @@ progress_start(unsigned interval_seconds, void (*emit)(unsigned percent)) {
     logq("Progress notifications unavailable: %s", strerror(rc));
     return;
   }
-  progress_interval = interval_seconds;
   progress_emit = emit;
   progress_running = 1;
   rc = pthread_create(&progress_thread, NULL, progress_worker, NULL);
