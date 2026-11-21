@@ -167,8 +167,8 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v3"
-#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-" PS5SAVE_RELEASE ".png"
+#define PS5SAVE_RELEASE "jolissipo-v1.0.0"
+#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
 
@@ -371,7 +371,7 @@ build_notification_payload(const char *message, const char *created_at,
         "\"icon\":{\"type\":\"Url\",\"parameters\":{"
           "\"url\":\"" NOTIFICATION_ICON_PATH "\"}},"
         "\"message\":{\"body\":\"%s\"},"
-        "\"subMessage\":{\"body\":\"PS5Save | Version %s\"}}},"
+        "\"subMessage\":{\"body\":\"PS5Save | %s\"}}},"
       "\"createdDateTime\":\"%s\",\"localNotificationId\":\"%s\"}",
     escaped, PS5SAVE_VERSION, created_at, id);
   free(escaped);
