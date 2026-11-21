@@ -23,6 +23,9 @@ along with this program; see the file COPYING. If not, see
  *   /data/PCSX2/Mcd001.ps2        one file
  *   /data/porpoise/saves/<star>   every file and folder below, recursively
  *   backup_interval_seconds=60      seconds between backups (default 60)
+ *   backup_notifications=all       all, errors or off (default all)
+ *   backup_notifications_in_game=true  allow toasts during possible game activity
+ *   backup_progress_interval_seconds=30  seconds between progress checks (0 disables)
  *   backup_ps4_saves=true           enable decrypted PS4 saves (default false)
  *   backup_ps5_saves=true           enable decrypted PS5 saves (default false)
  *   backup_encrypted_saves=true     copy original PS4 and PS5 save files
@@ -145,7 +148,6 @@ along with this program; see the file COPYING. If not, see
 #define LOCK_PORT     9055    /* loopback port used to detect/replace a running instance */
 #endif
 #define MISSING_TRIES 6       /* conf missing this many slices in a row -> notify */
-#define MAX_SEEN      256
 
 #ifndef GAME_CHECK_SEC
 #define GAME_CHECK_SEC 1.0    /* how often the game check is repeated while mounted */
@@ -264,9 +266,6 @@ typedef enum { SV_OK, SV_SKIP, SV_FAILED, SV_GAME } sv_result_t;
 
 static char *g_buf;
 static long g_interval = DEF_INTERVAL;
-static int g_last_failed = 0;
-static char *g_seen[MAX_SEEN];
-static int g_nseen = 0;
 
 static uint64_t g_max_game = DEF_GAME_MB * BYTES_PER_MB;
 static uint64_t g_file_cap = MAX_FILE_SZ;   /* per-file limit, 0 = none */
@@ -287,6 +286,31 @@ static char g_abort_why[192];
 
 
 static void logq(const char *fmt, ...);
+static int notification_game_muted(void);
+
+typedef enum { NOTICES_ALL, NOTICES_ERRORS, NOTICES_OFF } notice_mode_t;
+typedef enum { NOTICE_INFO, NOTICE_WARNING, NOTICE_ERROR } notice_level_t;
+typedef struct {
+  notice_mode_t mode;
+  int in_game;
+  unsigned progress_seconds;
+} notification_settings_t;
+
+#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 1, 30}
+static const notification_settings_t notification_defaults = DEFAULT_NOTIFICATION_SETTINGS;
+static notification_settings_t notification_settings = DEFAULT_NOTIFICATION_SETTINGS;
+
+/* Settings are published between passes with the worker joined. The sender
+ * mutex serializes rich toasts, icon installation and issue history updates. */
+static pthread_mutex_t notification_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define MAX_NOTIFICATION_ISSUES 256
+static struct {
+  const char *problem;
+  char *subject;
+  int observed;
+} notification_issues[MAX_NOTIFICATION_ISSUES];
+static size_t next_notification_issue;
+static int notification_cycle_failed;
 
 /* Escape every JSON control character and reject overflow rather than emit
  * truncated or malformed JSON. UTF-8 bytes are preserved. */
@@ -354,62 +378,145 @@ build_notification_payload(const char *message, const char *created_at,
   return n >= 0 && (size_t)n < size;
 }
 
-/** Send every user-facing message through libSceNotification, with our icon. */
-static void
-notify_v(const char *fmt, va_list ap) {
+/** Send an eligible message through libSceNotification, with our icon. */
+static int
+send_notification(const char *message) {
   static unsigned serial;
-  char message[2048];
   char *payload;
   char created_at[32];
   char id[96];
   struct timespec ts;
   struct tm utc;
 
-  vsnprintf(message, sizeof message, fmt, ap);
-  logq("%s", message);
-
   if(!prepare_notification_icon()) {
     logq("Rich notification not sent: icon installation failed (%s)",
          strerror(errno));
-    return;
+    return 0;
   }
   if(clock_gettime(CLOCK_REALTIME, &ts) ||
      !gmtime_r(&ts.tv_sec, &utc) ||
      !strftime(created_at, sizeof created_at, "%Y-%m-%dT%H:%M:%S.000Z", &utc)) {
     logq("Rich notification not sent: cannot obtain timestamp");
-    return;
+    return 0;
   }
   snprintf(id, sizeof id, "ps5save-%lld-%ld-%d-%u",
            (long long)ts.tv_sec, ts.tv_nsec, (int)getpid(), ++serial);
   payload = malloc(NOTIFICATION_JSON_SIZE);
   if(!payload) {
     logq("Rich notification not sent: not enough memory");
-    return;
+    return 0;
   }
   if(!build_notification_payload(message, created_at, id,
                                  payload, NOTIFICATION_JSON_SIZE)) {
     free(payload);
     logq("Rich notification not sent: payload too large");
-    return;
+    return 0;
   }
   int rc = sceNotificationSend(NOTIFICATION_USER_ID, true, payload);
   free(payload);
   if(rc != 0) {
     logq("sceNotificationSend failed (0x%08x)", (unsigned)rc);
   }
+  return rc == 0;
 }
 
 
-/* Serialize the timer and main thread, including icon setup and notification IDs. */
+static int
+notification_allowed(notice_level_t level) {
+  return notification_settings.mode == NOTICES_ALL ||
+         (notification_settings.mode == NOTICES_ERRORS && level != NOTICE_INFO);
+}
+
+static int
+notification_emit_locked(notice_level_t level, const char *message) {
+  if(!notification_allowed(level)) return 0;
+  return (notification_settings.in_game || !notification_game_muted()) &&
+         send_notification(message);
+}
+
 static void
-notify(const char *fmt, ...) {
-  static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+notify_info(const char *fmt, ...) {
+  char message[2048];
   va_list ap;
-  pthread_mutex_lock(&mutex);
   va_start(ap, fmt);
-  notify_v(fmt, ap);
+  vsnprintf(message, sizeof message, fmt, ap);
   va_end(ap);
-  pthread_mutex_unlock(&mutex);
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  notification_emit_locked(NOTICE_INFO, message);
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+/* The problem identifier is a string literal. The subject is copied only
+ * after a successful send; muted or failed sends never become pending toasts. */
+static void
+notify_problem(notice_level_t level, const char *problem, const char *subject,
+               const char *fmt, ...) {
+  char message[2048];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(message, sizeof message, fmt, ap);
+  va_end(ap);
+  logq("%s: %s%s%s", level == NOTICE_ERROR ? "ERROR" : "WARNING",
+       message, subject && subject[0] ? " " : "", subject ? subject : "");
+
+  if(!subject) subject = "";
+  pthread_mutex_lock(&notification_mutex);
+  if(level == NOTICE_ERROR) notification_cycle_failed = 1;
+  size_t free_slot = MAX_NOTIFICATION_ISSUES;
+  for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++) {
+    if(!notification_issues[i].problem) {
+      if(free_slot == MAX_NOTIFICATION_ISSUES) free_slot = i;
+    } else if(!strcmp(notification_issues[i].problem, problem) &&
+              !strcmp(notification_issues[i].subject, subject)) {
+      notification_issues[i].observed = 1;
+      goto done;
+    }
+  }
+
+  if(!notification_emit_locked(level, message)) goto done;
+  char *saved_subject = strdup(subject);
+  if(!saved_subject) goto done;
+  if(free_slot == MAX_NOTIFICATION_ISSUES) {
+    free_slot = next_notification_issue;
+    next_notification_issue = (next_notification_issue + 1) % MAX_NOTIFICATION_ISSUES;
+    free(notification_issues[free_slot].subject);
+  }
+  notification_issues[free_slot].problem = problem;
+  notification_issues[free_slot].subject = saved_subject;
+  notification_issues[free_slot].observed = 1;
+done:
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notification_issues_begin(int pending_only) {
+  pthread_mutex_lock(&notification_mutex);
+  notification_cycle_failed = 0;
+  if(!pending_only) {
+    for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++)
+      notification_issues[i].observed = 0;
+  }
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notification_issues_end(void) {
+  pthread_mutex_lock(&notification_mutex);
+  for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++) {
+    if(notification_issues[i].problem && !notification_issues[i].observed) {
+      free(notification_issues[i].subject);
+      notification_issues[i].subject = NULL;
+      notification_issues[i].problem = NULL;
+    }
+  }
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notify_progress(unsigned percent) {
+  notify_info("Backing up... (%u%%)", percent);
 }
 
 #include "backup_progress.h"
@@ -421,8 +528,9 @@ static void
 backup_activity_begin(void) {
   if(!g_backup_busy) {
     g_backup_busy = 1;
-    notify("Backing up, don't unplug the USB");
-    progress_start();
+    notify_info("Backing up. Keep the USB connected.");
+    if(notification_allowed(NOTICE_INFO))
+      progress_start(notification_settings.progress_seconds, notify_progress);
   }
 }
 
@@ -442,24 +550,6 @@ logq(const char *fmt, ...) {
   printf("%s\n", msg);
   fflush(stdout);
   klog_printf("[backup] %s\n", msg);
-}
-
-
-/**
- * Returns non-zero if the path was reported before; remembers it otherwise.
- * Used so that a permanently oversized file is not announced every cycle.
- **/
-static int
-seen_before(const char *path) {
-  for(int i = 0; i < g_nseen; i++) {
-    if(!strcmp(g_seen[i], path)) {
-      return 1;
-    }
-  }
-  if(g_nseen < MAX_SEEN) {
-    g_seen[g_nseen++] = strdup(path);
-  }
-  return 0;
 }
 
 
@@ -650,6 +740,32 @@ game_watch(void) {
  * Plain file backup
  * ---------------------------------------------------------------------- */
 
+static const char *
+backup_path_name(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return slash ? slash + 1 : path;
+}
+
+static void
+backup_scan_error(const char *problem, const char *subject, const char *src, int error) {
+  if(g_progress_planning) return;
+  logq("Cannot scan %s: %s", src, strerror(error));
+  notify_problem(NOTICE_ERROR, problem, subject, "Backup cannot read: %s.",
+                 backup_path_name(subject));
+}
+
+static struct dirent *
+backup_readdir(DIR *dir, const char *subject, const char *src) {
+  errno = 0;
+  struct dirent *entry = readdir(dir);
+  if(!entry && errno) {
+    int error = errno;
+    backup_scan_error("read-directory", subject, src, error);
+    errno = error;
+  }
+  return entry;
+}
+
 /**
  * Copy a single file from src to dst. The data is written to a temporary file
  * first, so that an interrupted copy (full or removed USB drive) never
@@ -669,6 +785,8 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   int out = -1;
   int ok = 0;
   int aborted = 0;
+  int error;
+  const char *operation = "temporary file path";
   unsigned reads = 0;
 
   int progress_started = 0;
@@ -681,10 +799,9 @@ backup_file(const char *src, const char *dst, const struct stat *st,
 
   /* per-file limit; not applied inside game saves, which are judged per game */
   if(g_file_cap && (uint64_t)st->st_size > g_file_cap) {
-    if(!seen_before(label)) {
-      logq("Abnormal size of %s; skipping backup", label);
-      notify("File skipped: too large.");
-    }
+    logq("Abnormal size of %s; skipping backup", label);
+    notify_problem(NOTICE_WARNING, "file-size", label, "File too large: %s.",
+                   backup_path_name(label));
     stats->skipped++;
     return;
   }
@@ -697,6 +814,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   tmp[0] = 0;
   if(snprintf(tmp, sizeof tmp, "%s.part", dst) >= (int)sizeof tmp) {
     tmp[0] = 0;
+    errno = ENAMETOOLONG;
     goto done;
   }
 
@@ -710,6 +828,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   /* make sure the USB drive can hold the new file */
   if(usb_free() < (uint64_t)st->st_size + SPACE_MARGIN) {
     logq("Failed to backup %s (not enough space on USB)", label);
+    notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
     stats->failed++;
     return;
   }
@@ -717,11 +836,13 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   snprintf(dir, sizeof dir, "%s", dst);
   if((slash = strrchr(dir, '/')) && slash != dir) {
     *slash = 0;
+    operation = "create USB directory";
     if(mkdir_p(dir)) {
       goto done;
     }
   }
 
+  operation = "open source file";
   if((in = open(src, O_RDONLY)) < 0) {
     goto done;
   }
@@ -730,6 +851,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
     progress_started = 1;
   }
   backup_activity_begin();
+  operation = "open USB file";
   if((out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0) {
     goto done;
   }
@@ -742,6 +864,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
         if(errno == EINTR) {
           continue;
         }
+        operation = "write USB file";
         goto done;
       }
       progress_advance(w);
@@ -757,16 +880,24 @@ backup_file(const char *src, const char *dst, const struct stat *st,
     }
   }
   if(n < 0) {
+    operation = "read source file";
     goto done;
   }
 
-  if(fstat(in, &after) || !source_same(st, &after)) {
-    logq("Source changed during copy: %s", src);
+  operation = "check source file";
+  if(fstat(in, &after)) {
     goto done;
   }
+  if(!source_same(st, &after)) {
+    operation = "source changed during copy";
+    errno = EAGAIN;
+    goto done;
+  }
+  operation = "sync USB file";
   if(fsync(out)) {
     goto done;
   }
+  operation = "close USB file";
   if(close(out)) {
     out = -1;
     goto done;
@@ -779,6 +910,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   tv[1] = tv[0];
   utimes(tmp, tv);
 
+  operation = "commit USB file";
   if(rename(tmp, dst)) {
     goto done;
   }
@@ -787,6 +919,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   ok = 1;
 
 done:
+  error = errno;
   if(progress_started) progress_finish();
   if(in >= 0) {
     close(in);
@@ -803,7 +936,15 @@ done:
       unlink(tmp);
     }
     if(!aborted) {
-      logq("Failed to backup %s", label);
+      logq("Failed to back up %s (%s): %s", label, operation, strerror(error));
+      if(error == ENOSPC) {
+        notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
+      } else if(error == EROFS) {
+        notify_problem(NOTICE_ERROR, "usb-read-only", NULL, "Backup USB is read-only.");
+      } else {
+        notify_problem(NOTICE_ERROR, operation, label, "File backup failed: %s.",
+                       backup_path_name(label));
+      }
       stats->failed++;
     }
   }
@@ -834,23 +975,31 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
   struct stat st;
   DIR *dir;
 
+  const char *label = dst + strlen(BACKUP_ROOT);
   if(!(dir = opendir(src))) {
-    logq("Failed to backup %s", dst + strlen(BACKUP_ROOT));
+    backup_scan_error("open-directory", label, src, errno);
     stats->failed++;
     return;
   }
 
-  while((dp = readdir(dir)) && !(g_watch_game && g_game_abort)) {
+  while((dp = backup_readdir(dir, label, src)) && !(g_watch_game && g_game_abort)) {
     if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
       continue;
     }
 
     if(snprintf(spath, sizeof spath, "%s/%s", src, dp->d_name) >= (int)sizeof spath ||
        snprintf(dpath, sizeof dpath, "%s/%s", dst, dp->d_name) >= (int)sizeof dpath) {
+      if(!g_progress_planning) {
+        logq("Backup path too long: %s/%s", src, dp->d_name);
+        notify_problem(NOTICE_ERROR, "backup-path-length", label,
+                       "Backup path too long under %s.", backup_path_name(label));
+        stats->failed++;
+      }
       continue;
     }
 
     if(lstat(spath, &st)) {
+      backup_scan_error("stat-file", dpath + strlen(BACKUP_ROOT), spath, errno);
       stats->failed++;
       continue;
     }
@@ -870,6 +1019,7 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
     /* symlinks and special files are ignored */
   }
 
+  if(!dp && errno && !g_progress_planning) stats->failed++;
   closedir(dir);
 }
 
@@ -1109,12 +1259,18 @@ stamp_write(const char *dst_dir, const struct stat *img) {
   snprintf(path, sizeof path, "%s/.image_stamp", dst_dir);
   snprintf(part, sizeof part, "%s.part", path);
   FILE *f = fopen(part, "wb");
-  if(!f) return;
+  if(!f) {
+    logq("Cannot save image stamp %s: %s", path, strerror(errno));
+    return;
+  }
   int ok = fwrite("PS5IMG2\n", 1, 8, f) == 8 &&
            fwrite(&sig, 1, sizeof sig, f) == sizeof sig;
   if(fflush(f) || fsync(fileno(f))) ok = 0;
   if(fclose(f)) ok = 0;
-  if(!ok || rename(part, path)) unlink(part);
+  if(!ok || rename(part, path)) {
+    logq("Cannot commit image stamp %s", path);
+    unlink(part);
+  }
 }
 
 
@@ -1131,6 +1287,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   uint8_t sealed[0x60];
   uint8_t key[0x20];
   const char *save = name;
+  const char *operation = "read save metadata";
   sv_result_t result = SV_FAILED;
   unsigned failed_before;
   struct stat ist, after;
@@ -1151,7 +1308,11 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   save_dst_dir(dst_dir, sizeof dst_dir, ps5, uid, title, save);
   snprintf(label, sizeof label, "%s", dst_dir + strlen(BACKUP_ROOT));
 
-  if(stat(image, &ist) || !S_ISREG(ist.st_mode)) {
+  if(stat(image, &ist)) {
+    if(errno != ENOENT) backup_scan_error("stat-save-image", image, image, errno);
+    return SV_SKIP;
+  }
+  if(!S_ISREG(ist.st_mode)) {
     return SV_SKIP;
   }
 
@@ -1164,6 +1325,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   /* the size of the whole game was already checked per title id */
   if(ist.st_size < 0x860) {
     logq("Failed to backup %s (not a save image)", label);
+    notify_problem(NOTICE_ERROR, "save-image-format", label, "Invalid save image (%s).", title);
     stats->failed++;
     return SV_FAILED;
   }
@@ -1171,6 +1333,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   /* Use the image size as a conservative bound; do not rescan the USB tree. */
   if(usb_free() < (uint64_t)ist.st_size + SPACE_MARGIN) {
     logq("Failed to backup %s (not enough space on USB)", label);
+    notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
     stats->failed++;
     return SV_FAILED;
   }
@@ -1205,6 +1368,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
 
   if(!enough_space((uint64_t)ist.st_size + SPACE_MARGIN)) {
     logq("Failed to backup %s (not enough free space)", label);
+    notify_problem(NOTICE_ERROR, "console-space", NULL, "Not enough console storage for save backups.");
     stats->failed++;
     return SV_FAILED;
   }
@@ -1219,6 +1383,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   g_progress_image = 1;
   progress_begin(ist.st_size);
   progress_stage(ist.st_size, 0, 0.5);
+  operation = "stage save image";
   ret = copy_plain(image, TMP_IMG);
   if(ret == -2) {
     result = SV_GAME;
@@ -1237,14 +1402,16 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   }
 
   if(stat(image, &after) || !source_same(&ist, &after)) {
-    logq("Save image changed while staging: %s", label);
+    operation = "save image changed while staging";
     goto fail_cleanup;
   }
 
+  operation = "prepare save key";
   if(decrypt_key(sealed, key)) {
     goto fail_cleanup;
   }
 
+  operation = "prepare save mount directory";
   if(mkdir(PFS_ROOT, 0777) && errno != EEXIST) {
     goto fail_cleanup;
   }
@@ -1260,6 +1427,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
     result = SV_GAME;
     goto cleanup;
   }
+  operation = "mount save image";
   if(sceFsMountSaveData(&mopt, TMP_IMG, MOUNT_POINT, key) < 0) {
     rmdir(MOUNT_POINT);
     goto fail_cleanup;
@@ -1277,9 +1445,11 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   if(g_game_abort) {
     result = SV_GAME;
   } else if(stat(image, &after) || !source_same(&ist, &after)) {
-    logq("Save image changed during backup: %s", label);
+    operation = "save image changed during backup";
   } else if(stats->failed == failed_before) {
     result = SV_OK;
+  } else {
+    operation = NULL;   /* The file or directory failure was already reported. */
   }
   goto cleanup;
 
@@ -1292,7 +1462,7 @@ cleanup:
     if(unmount_save()) {
       g_mount_stuck = 1;
       logq("Failed to unmount save image; PS4/PS5 saves backup disabled");
-      notify("Save backup paused: cleanup failed.");
+      notify_problem(NOTICE_ERROR, "save-cleanup", NULL, "Save backup paused: cleanup failed.");
       g_watch_game = 0;
       progress_finish();
       g_progress_image = 0;
@@ -1311,13 +1481,15 @@ cleanup:
   if(result == SV_OK) {
     stamp_write(dst_dir, &ist);
   } else if(result == SV_FAILED) {
-    logq("Failed to backup %s", label);
-    stats->failed++;
+    goto fail;
   }
   return result;
 
 fail:
-  logq("Failed to backup %s", label);
+  logq("Failed to back up save %s (%s)", label, operation ? operation : "copy saved files");
+  if(operation) {
+    notify_problem(NOTICE_ERROR, operation, label, "Save backup failed (%s): %s.", title, save);
+  }
   stats->failed++;
   return SV_FAILED;
 }
@@ -1370,18 +1542,22 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
   snprintf(base, sizeof base, "%s/%s/%s", HOME_ROOT, uid,
            ps5 ? "savedata_prospero" : "savedata");
   if(!(bd = opendir(base))) {
+    if(errno != ENOENT) backup_scan_error("open-save-directory", base, base, errno);
     return;
   }
   if(!(imgs = calloc(MAX_IMAGES, sizeof *imgs))) {
     closedir(bd);
+    if(!g_progress_planning) {
+      notify_problem(NOTICE_ERROR, "save-scan-memory", NULL,
+                     "Not enough memory to scan saves.");
+    }
     return;
   }
 
-  while((td = readdir(bd)) && !g_mount_stuck) {
+  while((td = backup_readdir(bd, base, base)) && !g_mount_stuck) {
     char tdir[PATH_MAX];
     char tlabel[PATH_MAX];
     char dst_dir[PATH_MAX];
-    char key[PATH_MAX + 8];
     char a[32];
     char b[32];
     uint64_t total = 0;       /* all images of the game */
@@ -1398,10 +1574,14 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
     if(td->d_name[0] == '.') {
       continue;
     }
-    if(snprintf(tdir, sizeof tdir, "%s/%s", base, td->d_name) >= (int)sizeof tdir ||
-       stat(tdir, &st) || !S_ISDIR(st.st_mode)) {
+    if(snprintf(tdir, sizeof tdir, "%s/%s", base, td->d_name) >= (int)sizeof tdir) {
       continue;
     }
+    if(stat(tdir, &st)) {
+      if(errno != ENOENT) backup_scan_error("stat-save-title", tdir, tdir, errno);
+      continue;
+    }
+    if(!S_ISDIR(st.st_mode)) continue;
     pending_title_t *queued = pending_find(uid, td->d_name, ps5);
     if(g_pending_only && (!queued || !queued->ready)) continue;
     if(!g_progress_planning && queued) {
@@ -1409,21 +1589,26 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
       queued->retry_at = now_seconds() + g_interval;
     }
     if(!(id = opendir(tdir))) {
+      if(errno != ENOENT) backup_scan_error("open-save-title", tdir, tdir, errno);
       continue;
     }
 
     /* pass 1: size up the whole game without mounting anything */
-    while((ie = readdir(id))) {
+    while((ie = backup_readdir(id, tdir, tdir))) {
       const char *save;
       char path[PATH_MAX];
 
       if(!is_save_image(ie->d_name, ps5)) {
         continue;
       }
-      if(snprintf(path, sizeof path, "%s/%s", tdir, ie->d_name) >= (int)sizeof path ||
-         stat(path, &st) || !S_ISREG(st.st_mode)) {
+      if(snprintf(path, sizeof path, "%s/%s", tdir, ie->d_name) >= (int)sizeof path) {
         continue;
       }
+      if(stat(path, &st)) {
+        if(errno != ENOENT) backup_scan_error("stat-save-image", path, path, errno);
+        continue;
+      }
+      if(!S_ISREG(st.st_mode)) continue;
       if(n >= MAX_IMAGES) {
         overflow = 1;
         break;
@@ -1465,13 +1650,16 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
 
     /* 1. per-game size limit: the whole game or nothing */
     if(overflow || total > g_max_game) {
-      snprintf(key, sizeof key, "size:%s", tlabel);
-      if(!seen_before(key)) {
+      if(overflow) {
+        logq("Too many save images in %s (limit %d)", tlabel, MAX_IMAGES);
+        notify_problem(NOTICE_WARNING, "save-image-count", tlabel,
+                       "Too many save images (%s).", td->d_name);
+      } else {
         format_size(total, a, sizeof a);
         format_size(g_max_game, b, sizeof b);
-        logq("Abnormal size of %s; skipping backup (%s%s, limit %s)", tlabel,
-             overflow ? ">" : "", a, b);
-        notify("Game saves skipped: size limit exceeded.");
+        logq("Abnormal size of %s; skipping backup (%s, limit %s)", tlabel, a, b);
+        notify_problem(NOTICE_WARNING, "title-size", tlabel,
+                       "Game saves exceed the size limit (%s).", td->d_name);
       }
       stats->skipped++;
       continue;
@@ -1492,14 +1680,9 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
 
     /* 2. the largest image is copied to internal storage first */
     if(!enough_space(max_need + SPACE_MARGIN)) {
-      snprintf(key, sizeof key, "tmp:%s", tlabel);
-      if(!seen_before(key)) {
-        format_size(max_need + SPACE_MARGIN, a, sizeof a);
-        format_size(data_free(), b, sizeof b);
-        logq("Not enough internal storage for %s (need %s, free %s); "
-             "skipping backup", tlabel, a, b);
-        notify("Game saves skipped: not enough console storage.");
-      }
+      format_size(max_need + SPACE_MARGIN, a, sizeof a);
+      logq("Not enough internal storage for %s (need %s)", tlabel, a);
+      notify_problem(NOTICE_WARNING, "console-space", NULL, "Not enough console storage for save backups.");
       stats->skipped++;
       continue;
     }
@@ -1507,15 +1690,12 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
     /* 3. the USB drive must be able to hold everything that is going to be
      * written (image sizes are an upper bound of the decrypted content) */
     required = need_total + SPACE_MARGIN;
-    if(usb_free() < required) {
-      snprintf(key, sizeof key, "usb:%s", tlabel);
-      if(!seen_before(key)) {
-        format_size(required, a, sizeof a);
-        format_size(usb_free(), b, sizeof b);
-        logq("Not enough space on USB for %s (need ~%s, free %s); "
-             "skipping backup", tlabel, a, b);
-        notify("Game saves skipped: not enough USB space.");
-      }
+    uint64_t available = usb_free();
+    if(available < required) {
+      format_size(required, a, sizeof a);
+      format_size(available, b, sizeof b);
+      logq("Not enough space on USB for %s (need ~%s, free %s)", tlabel, a, b);
+      notify_problem(NOTICE_WARNING, "usb-space", NULL, "Not enough USB space for backups.");
       stats->skipped++;
       continue;
     }
@@ -1552,13 +1732,18 @@ backup_console_dir(const char *src, backup_stats_t *stats) {
 
   if(lstat(src, &st)) {
     if(errno != ENOENT) {
-      logq("Failed to read %s", src);
+      backup_scan_error("stat-console-directory", src, src, errno);
       stats->failed++;
     }
     return;
   }
   if(!S_ISDIR(st.st_mode) || is_backup_root(&st)) return;
   if(snprintf(dst, sizeof dst, "%s%s", BACKUP_ROOT, src) >= (int)sizeof dst) {
+    if(!g_progress_planning) {
+      logq("Backup path too long: %s", src);
+      notify_problem(NOTICE_ERROR, "backup-path-length", src,
+                     "Backup path too long: %s.", backup_path_name(src));
+    }
     stats->failed++;
     return;
   }
@@ -1584,12 +1769,15 @@ backup_saves(backup_stats_t *stats) {
     g_need_cleanup = 0;
   }
   if(decrypted && g_mount_stuck) {
-    logq("A previous save mount could not be removed; decrypted saves backup disabled");
+    if(!g_progress_planning) {
+      logq("A previous save mount could not be removed; decrypted saves backup disabled");
+      notify_problem(NOTICE_ERROR, "save-cleanup", NULL, "Save backup paused: cleanup failed.");
+    }
     stats->failed++;
   }
 
   if((hd = opendir(HOME_ROOT))) {
-    while((ud = readdir(hd))) {
+    while((ud = backup_readdir(hd, HOME_ROOT, HOME_ROOT))) {
       struct stat st;
       char path[PATH_MAX];
 
@@ -1597,7 +1785,11 @@ backup_saves(backup_stats_t *stats) {
         continue;
       }
       snprintf(path, sizeof path, "%s/%s", HOME_ROOT, ud->d_name);
-      if(lstat(path, &st) || !S_ISDIR(st.st_mode)) continue;
+      if(lstat(path, &st)) {
+        if(errno != ENOENT) backup_scan_error("stat-console-user", path, path, errno);
+        continue;
+      }
+      if(!S_ISDIR(st.st_mode)) continue;
 
       if(g_ps4saves && !g_mount_stuck) {
         scan_saves(ud->d_name, 0, stats);
@@ -1625,7 +1817,7 @@ backup_saves(backup_stats_t *stats) {
     }
     closedir(hd);
   } else {
-    logq("Failed to open %s", HOME_ROOT);
+    backup_scan_error("open-console-users", HOME_ROOT, HOME_ROOT, errno);
     stats->failed++;
   }
 
@@ -1677,24 +1869,59 @@ config_number(const char *value, long min, long max, long *out) {
   return 1;
 }
 
+static char *
+config_trim(char *line) {
+  while(*line == ' ' || *line == '\t') {
+    line++;
+  }
+  size_t len = strlen(line);
+  while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
+                    line[len-1] == ' '  || line[len-1] == '\t')) {
+    line[--len] = 0;
+  }
+  return line;
+}
+
+static void
+notification_config_entry(const char *line, notification_settings_t *settings) {
+  const char *value;
+  if((value = config_value(line, "backup_notifications", NULL))) {
+    if(!strcmp(value, "all")) settings->mode = NOTICES_ALL;
+    else if(!strcmp(value, "errors")) settings->mode = NOTICES_ERRORS;
+    else if(!strcmp(value, "off")) settings->mode = NOTICES_OFF;
+    else logq("Invalid backup_notifications: %s (expected all, errors or off)", value);
+  } else if((value = config_value(line, "backup_notifications_in_game", NULL))) {
+    parse_bool(value, &settings->in_game);
+  } else if((value = config_value(line, "backup_progress_interval_seconds", NULL))) {
+    long seconds;
+    if(config_number(value, 0, 3600, &seconds)) {
+      if(seconds && seconds < 5)
+        logq("Invalid backup_progress_interval_seconds: %s (expected 0 or 5..3600)", value);
+      else settings->progress_seconds = (unsigned)seconds;
+    }
+  }
+}
+
+/* Read the policy even if the payload cannot start a backup pass. */
+static void
+notification_config_on_startup_error(void) {
+  FILE *f = fopen(CONF_PATH, "r");
+  if(!f) return;
+  notification_settings_t settings = notification_defaults;
+  char line[PATH_MAX + 16];
+  while(fgets(line, sizeof line, f)) notification_config_entry(config_trim(line), &settings);
+  if(!ferror(f)) notification_settings = settings;
+  fclose(f);
+}
+
 /**
- * Handle a single line from backup.conf.
+ * Handle a trimmed line from backup.conf.
  **/
 static void
 backup_entry(char *line, backup_stats_t *stats) {
   char dst[PATH_MAX];
   struct stat st;
-  size_t len;
-
-  /* trim whitespace and CR/LF */
-  while(*line == ' ' || *line == '\t') {
-    line++;
-  }
-  len = strlen(line);
-  while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
-                    line[len-1] == ' '  || line[len-1] == '\t')) {
-    line[--len] = 0;
-  }
+  size_t len = strlen(line);
 
   if(len == 0 || line[0] == '#') {
     return;
@@ -1769,11 +1996,22 @@ backup_entry(char *line, backup_stats_t *stats) {
   }
 
   if(snprintf(dst, sizeof dst, "%s%s", BACKUP_ROOT, line) >= (int)sizeof dst) {
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-path-length", line, "Backup path is too long.");
     return;
   }
 
   if(stat(line, &st)) {
-    logq("Failed to backup %s", line);
+    if(!g_progress_planning) {
+      int error = errno;
+      const char *name = backup_path_name(line);
+      if(!*name || strlen(name) > 255) name = "configured path";
+      if(error == ENOENT || error == ENOTDIR)
+        notify_problem(NOTICE_WARNING, "config-path-missing", line, "Backup source missing: %s", name);
+      else
+        notify_problem(NOTICE_ERROR, "config-path-read", line, "Cannot read backup source: %s", name);
+      logq("Cannot stat %s: %s", line, strerror(error));
+    }
     stats->failed++;
     return;
   }
@@ -1783,7 +2021,8 @@ backup_entry(char *line, backup_stats_t *stats) {
    * by identity so that every spelling of the root is covered. */
   struct stat root;
   if(!stat("/", &root) && root.st_dev == st.st_dev && root.st_ino == st.st_ino) {
-    logq("Refusing to back up the filesystem root: %s", line);
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-root", line, "Filesystem-root backup refused.");
     stats->failed++;
     return;
   }
@@ -1791,13 +2030,15 @@ backup_entry(char *line, backup_stats_t *stats) {
   /* The source path is appended to BACKUP_ROOT to form the destination. */
   for(const char *part = strstr(line, "/.."); part; part = strstr(part + 3, "/..")) {
     if(part[3] == '/' || part[3] == 0) {
-      logq("Refusing to back up a path with a parent directory component: %s", line);
+      if(!g_progress_planning)
+        notify_problem(NOTICE_ERROR, "config-parent", line, "Backup path contains a parent directory (..).");
       stats->failed++;
       return;
     }
   }
   if(S_ISDIR(st.st_mode) && is_backup_root(&st)) {
-    logq("Refusing to back up the backup destination: %s", line);
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-destination", line, "Backup destination cannot be a source.");
     stats->failed++;
     return;
   }
@@ -2008,7 +2249,13 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
     return -1;
   }
 
-  while((dp = readdir(dir)) && !rc) {
+  while(!rc) {
+    errno = 0;
+    dp = readdir(dir);
+    if(!dp) {
+      if(errno) rc = -1;
+      break;
+    }
     size_t len = strlen(dp->d_name);
 
     if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
@@ -2061,6 +2308,7 @@ daily_prune(const char *today) {
   struct stat st;
   int n = 0;
   int ns = 0;
+  unsigned removed = 0;
   DIR *dir;
 
   names = malloc((size_t)MAX_DAILY_DIRS * sizeof *names);
@@ -2068,6 +2316,7 @@ daily_prune(const char *today) {
   if(!names || !stale || !(dir = opendir(DAILY_ROOT))) {
     free(names);
     free(stale);
+    notify_problem(NOTICE_WARNING, "daily-prune-scan", NULL, "Could not check daily snapshot retention.");
     return;
   }
 
@@ -2090,7 +2339,8 @@ daily_prune(const char *today) {
 
   for(int i = 0; i < ns; i++) {
     snprintf(path, sizeof path, "%s/%s", DAILY_ROOT, stale[i]);
-    remove_tree(path);
+    if(remove_tree(path))
+      notify_problem(NOTICE_WARNING, "daily-prune-part", stale[i], "Could not remove an unfinished snapshot.");
   }
 
   qsort(names, n, sizeof *names, cmp_desc);
@@ -2102,14 +2352,16 @@ daily_prune(const char *today) {
     snprintf(path, sizeof path, "%s/%s", DAILY_ROOT, names[i]);
     if(!remove_tree(path)) {
       logq("Daily backup %s deleted (keeping newest %d)", names[i], g_daily);
-      notify("Old daily snapshot removed.");
+      removed++;
     } else {
-      logq("Failed to delete old daily backup %s", names[i]);
+      notify_problem(NOTICE_WARNING, "daily-prune", names[i], "Could not remove an old snapshot.");
     }
   }
 
   free(names);
   free(stale);
+  if(removed)
+    notify_info("Removed %u old daily snapshot%s.", removed, removed == 1 ? "" : "s");
 }
 
 
@@ -2122,7 +2374,6 @@ static void
 daily_check(void) {
   char final[PATH_MAX];
   char part[PATH_MAX];
-  char key[PATH_MAX];
   char tz[24];
   char a[32];
   char b[32];
@@ -2153,14 +2404,10 @@ daily_check(void) {
 
   need = dir_size(BACKUP_ROOT) + SPACE_MARGIN;
   if(usb_free() < need) {
-    snprintf(key, sizeof key, "daily-space:%s", ci.date);
-    if(!seen_before(key)) {
-      format_size(need, a, sizeof a);
-      format_size(usb_free(), b, sizeof b);
-      logq("Not enough space on USB for daily backup %s (need ~%s, free %s); "
-           "skipping", ci.date, a, b);
-      notify("Daily snapshot skipped: not enough USB space.");
-    }
+    format_size(need, a, sizeof a);
+    format_size(usb_free(), b, sizeof b);
+    logq("Not enough space on USB for daily backup %s (need ~%s, free %s)", ci.date, a, b);
+    notify_problem(NOTICE_WARNING, "usb-space", NULL, "Not enough USB space for backups.");
     return;
   }
 
@@ -2174,18 +2421,15 @@ daily_check(void) {
   if(copy_tree(BACKUP_ROOT, part, &bytes) || (sync(), rename(part, final))) {
     progress_finish();
     remove_tree(part);
-    snprintf(key, sizeof key, "daily-fail:%s", ci.date);
-    if(!seen_before(key)) {
-      logq("Failed to create daily backup %s", ci.date);
-      notify("Daily snapshot could not be saved.");
-    }
+    logq("Failed to create daily backup %s", ci.date);
+    notify_problem(NOTICE_ERROR, "daily-copy", NULL, "Daily snapshot could not be saved.");
     return;
   }
 
   progress_finish();
   format_size(bytes, a, sizeof a);
   logq("Daily backup %s created (%s, console time %s)", ci.date, a, tz);
-  notify("Daily snapshot saved.");
+  notify_info("Daily snapshot saved.");
   daily_prune(ci.date);
 }
 
@@ -2211,7 +2455,8 @@ next_due(double started) {
 
 
 /**
- * Run one backup pass. Returns -1 if backup.conf could not be opened.
+ * Run one backup pass. Returns -1 if backup.conf could not be opened,
+ * or -2 if it could not be rewound to run the copy pass.
  **/
 static int
 run_cycle(int pending_only) {
@@ -2221,12 +2466,14 @@ run_cycle(int pending_only) {
   pid_t pid = getpid();
   double start;
   FILE *f;
+  notification_settings_t settings = notification_defaults;
 
   /* escape the jail so that /data and /mnt/usb0 are reachable; done on every
    * cycle in case the state was reset while the console was suspended */
   kernel_set_proc_rootdir(pid, kernel_get_root_vnode());
 
   if(!(f = fopen(CONF_PATH, "r"))) {
+    logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
     return -1;
   }
 
@@ -2235,10 +2482,6 @@ run_cycle(int pending_only) {
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
   g_backup_busy = 0;
-  if(!g_start_notified) {
-    notify("Backup utility started");
-    g_start_notified = 1;
-  }
   memset(&stats, 0, sizeof stats);
   start = now_seconds();
 
@@ -2254,8 +2497,12 @@ run_cycle(int pending_only) {
 
   g_progress_planning = 1;
   while(fgets(line, sizeof line, f)) {
-    backup_entry(line, &stats);
+    char *entry = config_trim(line);
+    notification_config_entry(entry, &settings);
+    backup_entry(entry, &stats);
   }
+  int config_read_failed = ferror(f);
+  if(!config_read_failed) notification_settings = settings;
   backup_saves(&stats);
   if(!g_pending_only && g_daily > 0) {
     clock_info_t ci;
@@ -2269,8 +2516,14 @@ run_cycle(int pending_only) {
   }
   g_progress_planning = 0;
   if(fseek(f, 0, SEEK_SET)) {
+    logq("Cannot rewind %s: %s", CONF_PATH, strerror(errno));
     fclose(f);
-    return -1;
+    return -2;
+  }
+  notification_issues_begin(pending_only);
+  if(!g_start_notified) {
+    notify_info("Backup utility started.");
+    g_start_notified = 1;
   }
   memset(&stats, 0, sizeof stats);
   g_interval = DEF_INTERVAL;
@@ -2278,10 +2531,12 @@ run_cycle(int pending_only) {
   g_daily = g_ps4saves = g_ps5saves = 0;
   g_encrypted_saves = g_ps4trophies = g_ps5trophies = 0;
   while(fgets(line, sizeof line, f)) {
-    backup_entry(line, &stats);
+    backup_entry(config_trim(line), &stats);
   }
-
+  config_read_failed |= ferror(f);
   fclose(f);
+  if(config_read_failed)
+    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not read backup.conf completely.");
 
   pending_disable();
   if(g_pending_only) {
@@ -2295,22 +2550,16 @@ run_cycle(int pending_only) {
   index_save();
   if(!g_pending_only) daily_check();
   progress_stop();
+  if(!pending_only && !g_cycle_deferred && !g_mount_stuck && !config_read_failed)
+    notification_issues_end();
 
 
   if(stats.failed) {
-    /* announce only on the first failed cycle until recovery */
-    if(!g_last_failed) {
-      logq("Failed to backup (%u file(s) failed, %u copied)",
-           stats.failed, stats.copied);
-      notify("Backup incomplete (%u failed).", stats.failed);
-    }
-    g_last_failed = 1;
-  } else if(stats.copied || (g_last_failed && !g_cycle_deferred)) {
+    logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
+  } else if(stats.copied) {
     format_size(stats.bytes, size, sizeof size);
-    logq("Successful backup (%s) done in %.1f seconds.", size,
-         now_seconds() - start);
-    notify("Backup complete (%s).", size);
-    g_last_failed = 0;
+    logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
+    if(!notification_cycle_failed) notify_info("Backup complete (%s).", size);
   } else if(g_cycle_deferred) {
     logq("Backup pass finished; protected titles queued (%u files unchanged)", stats.unchanged);
   } else {
@@ -2318,6 +2567,14 @@ run_cycle(int pending_only) {
   }
 
   return 0;
+}
+
+static void
+report_config_error(int result) {
+  if(result == -2)
+    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not reread backup.conf on USB.");
+  else
+    notify_problem(NOTICE_ERROR, "config-open", NULL, "Could not open backup.conf on USB.");
 }
 
 
@@ -2407,24 +2664,26 @@ main(void) {
   kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
   lock = acquire_lock();
   if(lock < 0) {
-    notify("Backup could not start: instance lock unavailable.");
+    notification_config_on_startup_error();
+    notify_problem(NOTICE_ERROR, "instance-lock", NULL, "Backup could not start: instance lock unavailable.");
     return EXIT_FAILURE;
   }
 
   if(!(g_buf = malloc(COPY_BUF_SZ))) {
-    notify("Backup could not start: not enough memory.");
+    notification_config_on_startup_error();
+    notify_problem(NOTICE_ERROR, "startup-memory", NULL, "Backup could not start: not enough memory.");
     return EXIT_FAILURE;
   }
 
   /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
   started = now_seconds();
-  if(run_cycle(0) < 0) {
-    notify("backup.conf not found on USB.");
+  int result = run_cycle(0);
+  if(result < 0) {
+    report_config_error(result);
     return EXIT_FAILURE;
   }
   if(g_daily > 0) {
-    /* shows the date and UTC offset the payload sees, to check them against
-     * the console's clock */
+    /* Log the date and UTC offset the payload sees. */
     clock_info_t ci;
     char tz[24];
 
@@ -2432,7 +2691,6 @@ main(void) {
     format_offset(ci.offset_min, tz, sizeof tz);
     logq("Daily backups on: keeping newest %d (console date %s, %s)",
          g_daily, ci.date, tz);
-    notify("Daily snapshots enabled (%d kept).", g_daily);
   }
 
   due = next_due(started);
@@ -2445,16 +2703,18 @@ main(void) {
 #endif
     int wake = wait_until(due, lock);
     if(wake == 1) {
-      notify("Previous backup instance stopped.");
+      logq("Previous backup instance stopped.");
       break;
     }
 
     started = now_seconds();
-    if(run_cycle(wake == 2) < 0) {
+    result = run_cycle(wake == 2);
+    if(result < 0) {
       /* USB drive may still be mounting after rest mode: retry shortly and
        * only complain if it stays missing */
-      if(++missing == MISSING_TRIES) {
-        notify("backup.conf not found on USB.");
+      if(missing < MISSING_TRIES) missing++;
+      if(missing == MISSING_TRIES) {
+        report_config_error(result);
       }
       pending_retry_after = now_seconds() + SLICE_SEC * 3;
       due = pending_retry_after;

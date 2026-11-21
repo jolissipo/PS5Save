@@ -123,7 +123,10 @@ static void
 index_save(void) {
   if(!index_dirty) return;
   FILE *f = fopen(INDEX_PATH ".part", "wb");
-  if(!f) {logq("Cannot save change cache; next pass may recopy files"); return;}
+  if(!f) {
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
+    return;
+  }
   int ok = fwrite("PS5IDX2\n", 1, 8, f) == 8;
   for(unsigned i = 0; i < INDEX_BUCKETS && ok; i++) {
     for(change_record_t *r = change_index[i]; r && ok; r = r->next) {
@@ -137,7 +140,8 @@ index_save(void) {
   if(fflush(f) || fsync(fileno(f))) ok = 0;
   if(fclose(f)) ok = 0;
   if(!ok || rename(INDEX_PATH ".part", INDEX_PATH)) {
-    unlink(INDEX_PATH ".part"); logq("Cannot commit change cache");
+    unlink(INDEX_PATH ".part");
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
   } else index_dirty = 0;
 }
 #endif

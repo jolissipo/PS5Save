@@ -21,6 +21,13 @@ Example:
 # Delay between backup passes in seconds (int, min 30 max 3600)
 backup_interval_seconds=30
 
+# Show only warnings and errors, with game activity muted
+backup_notifications=errors
+backup_notifications_in_game=false
+
+# Progress sampling interval used in all mode
+backup_progress_interval_seconds=30
+
 # Enable decrypted PS4 save backups (false, true)
 backup_ps4_saves=true
 
@@ -65,6 +72,24 @@ Encrypted saves and trophies default to off. Each setting works independently of
 - Trophy backups copy the per-user `trophy` and `trophy2` directories and the shared catalogs under `/user/trophy` and `/user/trophy2` when present. The USB copies preserve those paths under `/backup`.
 - These options copy files individually on regular backup passes. For a consistent copy of a game's save and trophy files, close the game before running a pass.
 
+## Notifications
+
+| Setting | Values | Default |
+| --- | --- | --- |
+| `backup_notifications` | `all` shows status, progress, warnings and errors. `errors` shows warnings and errors. `off` disables visual notifications. | `all` |
+| `backup_notifications_in_game` | `true` follows the global mode in any context. `false` mutes visual notifications when game or app activity is possible. | `true` |
+| `backup_progress_interval_seconds` | `5`–`3600` seconds between progress checks, or `0` to disable progress toasts. Used in `all` mode. | `30` |
+
+For quiet automatic backups, use `backup_notifications=errors` and `backup_notifications_in_game=false`, as in the included `backup.conf`. Use `backup_notifications=off` for complete visual silence. The daemon reads the settings again on subsequent passes. The last valid value for a key in the current file wins. Invalid values are logged and the setting keeps its previous valid value from that read or its default. If the USB configuration becomes unavailable at runtime, the daemon uses the last policy it read. At cold start with an unreadable configuration it uses the defaults to report the startup error.
+
+Passes with no changes stay quiet apart from startup status and problems that need attention. When there is work, progress can generate up to three toasts per pass as it crosses 25%, 50% and 75%. If one interval spans several milestones, a single toast shows the latest sampled percentage. Successful passes that copied data can show a completion message. The progress setting controls visual updates. Backup scheduling and copy behavior are independent of it.
+
+Warnings and errors are logged even when visual notifications are disabled. Repeated observations of the same displayed problem are suppressed using a history of up to 256 entries. A regular pass that can fully evaluate the work clears old problems that no longer occur. Muted notifications are discarded. A persistent issue can still alert on a later pass if it has never been shown and notifications are allowed then.
+
+With `backup_notifications_in_game=false`, PS5Save mutes toasts when it sees a non-system application process, an application sandbox mount, or an inconclusive activity scan. This can include a suspended game on the home screen. The foreground-related SDK symbols lack a documented call contract, so PS5Save checks for possible activity at send time. This check is independent of the save-protection state. [PS5 Payload SDK state exports](https://github.com/ps5-payload-dev/sdk/blob/v0.45/sce_stubs/libSceSystemService.c#L1482-L1496)
+
+PS5Save keeps the rich JSON toast and embedded icon. The SDK shows how to send a toast with an ID and provides no documented update operation for an existing toast. [SDK notification example](https://github.com/ps5-payload-dev/sdk/blob/v0.45/samples/notify/main.c#L25-L85)
+
 ## Credits
 - n0llptr — [Playstation 5 Save Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter)
 - earthonion — loading game titles code and save creation: [Garlic SaveMgr](https://git.etawen.dev/earthonion/garlic-savemgr)
@@ -87,7 +112,7 @@ Download and extract the SDK
 wget https://github.com/ps5-payload-dev/sdk/releases/download/v0.45/ps5-payload-sdk.zip
 unzip ps5-payload-sdk.zip
 export PS5_PAYLOAD_SDK="$(pwd)/ps5-payload-sdk"
-export LLVM_CONFIG=llvm-config-18
+export LLVM_CONFIG="$(command -v llvm-config-18)"
 ```
 
 Open the PS5Save source directory, then run:
@@ -104,3 +129,5 @@ To rebuild after changing the source:
 make clean
 make
 ```
+
+Run the notification tests on Linux with `tests/run-host-tests.sh`. They use a host C compiler, simulated title activity and a stub for the console notification service. Visual rendering and foreground behavior need testing on a PS5.

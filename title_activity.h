@@ -4,14 +4,15 @@
 #define TITLE_ACTIVITY_H
 #define MAX_ACTIVE_TITLES 512
 #define CLOSE_POLL_SEC 2
-static struct {
+typedef struct {
   char titles[MAX_ACTIVE_TITLES][10];
   char origins[MAX_ACTIVE_TITLES][128];
   size_t count;
   int unknown;
   char reason[160];
   double checked;
-} activity;
+} activity_snapshot_t;
+static activity_snapshot_t activity;
 static char g_watch_title[10];
 static int g_pending_only, g_cycle_deferred;
 
@@ -33,27 +34,34 @@ title_valid(const char *title) {
   return 1;
 }
 
-static void
-activity_unknown(const char *fmt, ...) {
-  if(!activity.unknown) {
+/* A caller without a snapshot can stop as soon as the result calls for muting. */
+static int
+activity_unknown(activity_snapshot_t *snapshot, const char *fmt, ...) {
+  if(!snapshot) return 1;
+  if(!snapshot->unknown) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(activity.reason, sizeof activity.reason, fmt, ap);
+    vsnprintf(snapshot->reason, sizeof snapshot->reason, fmt, ap);
     va_end(ap);
   }
-  activity.unknown = 1;
+  snapshot->unknown = 1;
+  return 0;
 }
 
-static void
-activity_add(const char *title, const char *origin) {
-  if(!strncmp(title, "NPXS", 4)) return;
-  if(!title_valid(title)) {activity_unknown("invalid application title ID: %.32s", title); return;}
-  for(size_t i = 0; i < activity.count; i++)
-    if(!strcmp(activity.titles[i], title)) return;
-  if(activity.count == MAX_ACTIVE_TITLES) {activity_unknown("too many active title IDs"); return;}
-  memcpy(activity.titles[activity.count], title, 10);
-  snprintf(activity.origins[activity.count], sizeof activity.origins[0], "%s", origin);
-  activity.count++;
+static int
+activity_add(activity_snapshot_t *snapshot, const char *title, const char *origin) {
+  if(!strncmp(title, "NPXS", 4)) return 0;
+  if(!snapshot) return 1;
+  if(!title_valid(title))
+    return activity_unknown(snapshot, "invalid application title ID: %.32s", title);
+  for(size_t i = 0; i < snapshot->count; i++)
+    if(!strcmp(snapshot->titles[i], title)) return 0;
+  if(snapshot->count == MAX_ACTIVE_TITLES)
+    return activity_unknown(snapshot, "too many active title IDs");
+  memcpy(snapshot->titles[snapshot->count], title, 10);
+  snprintf(snapshot->origins[snapshot->count], sizeof snapshot->origins[0], "%s", origin);
+  snapshot->count++;
+  return 0;
 }
 
 /* An application sandbox has exactly one of two layouts:
@@ -70,30 +78,29 @@ sandbox_title(const char *p, char title[10]) {
   return title_valid(title);
 }
 
-static void
-activity_mount(const char *path) {
+static int
+activity_mount(activity_snapshot_t *snapshot, const char *path) {
   const char *p = strstr(path, "/mnt/sandbox/");
   const char *q;
   char title[10];
 
-  if(!p) return;
+  if(!p) return 0;
   p += strlen("/mnt/sandbox/");
 
   if(!strncmp(p, "pfsmnt/", 7)) {
     q = p + 7;
-    if(!sandbox_title(q, title) || strncmp(q + 9, "-app0", 5)) return;
+    if(!sandbox_title(q, title) || strncmp(q + 9, "-app0", 5)) return 0;
     q += 14;
-    if(*q && *q != '/') return;
-    activity_add(title, path);
-    return;
+    if(*q && *q != '/') return 0;
+    return activity_add(snapshot, title, path);
   }
 
-  if(!sandbox_title(p, title) || p[9] != '_') return;
+  if(!sandbox_title(p, title) || p[9] != '_') return 0;
   q = p + 10;
-  if(!isdigit((unsigned char)*q)) return;
+  if(!isdigit((unsigned char)*q)) return 0;
   while(isdigit((unsigned char)*q)) q++;
-  if(*q && *q != '/') return;
-  activity_add(title, path);
+  if(*q && *q != '/') return 0;
+  return activity_add(snapshot, title, path);
 }
 
 /* Shared directory exports are not game-liveness evidence. ShadowMountPlus
@@ -124,20 +131,18 @@ activity_auxiliary_export(const char *path, const char *source, const char *type
   return 0;
 }
 
-static void
-activity_mount_record(const char *path, const char *source, const char *type) {
-  if(activity_auxiliary_export(path, source, type)) return;
-  activity_mount(path);
+static int
+activity_mount_record(activity_snapshot_t *snapshot, const char *path,
+                      const char *source, const char *type) {
+  if(activity_auxiliary_export(path, source, type)) return 0;
+  return activity_mount(snapshot, path);
 }
 
-static void
-activity_refresh(int force) {
-  double now = now_seconds();
-  if(!force && activity.checked && now - activity.checked < GAME_CHECK_SEC) return;
-  activity.count = 0;
-  activity.unknown = 0;
-  activity.reason[0] = 0;
-  activity.checked = now;
+/* Collect every title for save protection, or stop on any activity or
+ * uncertainty when deciding whether to mute a notification. */
+static int
+activity_scan(activity_snapshot_t *snapshot) {
+  int mute = 0;
 #ifndef BACKUP_HOST_TEST
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
   size_t size = 0;
@@ -152,7 +157,8 @@ activity_refresh(int force) {
     if(!sysctl(mib, 4, buf, &size, NULL, 0)) ok = 1;
     else if(errno != ENOMEM) break;
   }
-  if(!ok) activity_unknown("cannot read process list (errno %d)", errno);
+  if(!ok)
+    mute = activity_unknown(snapshot, "cannot read process list (errno %d)", errno);
   else {
     size_t pos = 0;
     /* Only the PID field is needed. Different record tails must not turn a
@@ -163,13 +169,13 @@ activity_refresh(int force) {
       size_t remaining = size - pos;
       int entry_size;
       if(remaining < sizeof entry_size) {
-        activity_unknown("truncated process-list header (%zu bytes)", remaining);
+        mute = activity_unknown(snapshot, "truncated process-list header (%zu bytes)", remaining);
         break;
       }
       memcpy(&entry_size, buf + pos, sizeof entry_size);
       if(entry_size < 0 || (size_t)entry_size < pid_end || (size_t)entry_size > remaining) {
-        activity_unknown("invalid process record: %d bytes, need %zu, remaining %zu",
-                         entry_size, pid_end, remaining);
+        mute = activity_unknown(snapshot, "invalid process record: %d bytes, need %zu, remaining %zu",
+                                entry_size, pid_end, remaining);
         break;
       }
       pid_t pid;
@@ -187,43 +193,70 @@ activity_refresh(int force) {
       if(title[0]) {
         char origin[64];
         snprintf(origin, sizeof origin, "application process pid %d", (int)pid);
-        activity_add(title, origin);
+        mute = activity_add(snapshot, title, origin);
       }
       else if(ai.app_id)
-        activity_unknown("application has no title ID (pid %d, app_id 0x%08x)",
-                         (int)pid, (unsigned)ai.app_id);
+        mute = activity_unknown(snapshot, "application has no title ID (pid %d, app_id 0x%08x)",
+                                (int)pid, (unsigned)ai.app_id);
+      if(mute) break;
     }
   }
   free(buf);
+  if(mute) return 1;
+
+  /* getmntinfo owns this buffer and a later call can overwrite it. */
+  static pthread_mutex_t mount_info_mutex = PTHREAD_MUTEX_INITIALIZER;
   struct statfs *mounts = NULL;
+  pthread_mutex_lock(&mount_info_mutex);
   int count = getmntinfo(&mounts, MNT_NOWAIT);
-  if(count <= 0 || !mounts) activity_unknown("cannot read mount table (errno %d)", errno);
-  else for(int i = 0; i < count; i++)
-    activity_mount_record(mounts[i].f_mntonname, mounts[i].f_mntfromname,
-                          mounts[i].f_fstypename);
+  if(count <= 0 || !mounts)
+    mute = activity_unknown(snapshot, "cannot read mount table (errno %d)", errno);
+  else for(int i = 0; i < count && !mute; i++)
+    mute = activity_mount_record(snapshot, mounts[i].f_mntonname, mounts[i].f_mntfromname,
+                                 mounts[i].f_fstypename);
+  pthread_mutex_unlock(&mount_info_mutex);
 #else
   const char *state = getenv("TEST_ACTIVE_TITLES");
   FILE *f = state ? fopen(state, "r") : NULL;
-  if(state && !f) activity_unknown("test activity file unavailable");
+  if(state && !f) mute = activity_unknown(snapshot, "test activity file unavailable");
   if(f) {
     char line[256];
-    while(fgets(line, sizeof line, f)) {
+    while(!mute && fgets(line, sizeof line, f)) {
       line[strcspn(line, "\r\n")] = 0;
-      if(!strcmp(line, "UNKNOWN")) activity_unknown("test activity unknown");
+      if(!strcmp(line, "UNKNOWN")) mute = activity_unknown(snapshot, "test activity unknown");
       else if(!strncmp(line, "MOUNT\t", 6)) {
         char *path = line + 6, *source = strchr(path, '\t');
         char *type = NULL;
         if(source) {*source++ = 0; type = strchr(source, '\t');}
-        if(type) {*type++ = 0; activity_mount_record(path, source, type);}
-        else activity_unknown("invalid test mount record");
+        if(type) {*type++ = 0; mute = activity_mount_record(snapshot, path, source, type);}
+        else mute = activity_unknown(snapshot, "invalid test mount record");
       }
-      else if(line[0] == '/') activity_mount(line);
-      else if(line[0]) activity_add(line, "test application process");
+      else if(line[0] == '/') mute = activity_mount(snapshot, line);
+      else if(line[0]) mute = activity_add(snapshot, line, "test application process");
     }
-    if(ferror(f)) activity_unknown("test activity read failed");
+    if(ferror(f)) mute = activity_unknown(snapshot, "test activity read failed");
     fclose(f);
   }
 #endif
+  return mute;
+}
+
+static int
+notification_game_muted(void) {
+  /* Running and suspended apps cannot be distinguished reliably here. */
+  return activity_scan(NULL);
+}
+
+static void
+activity_refresh(int force) {
+  double now = now_seconds();
+  if(!force && activity.checked && now - activity.checked < GAME_CHECK_SEC) return;
+  activity.count = 0;
+  activity.unknown = 0;
+  activity.reason[0] = 0;
+  activity.checked = now;
+  activity_scan(&activity);
+
   static char last_reason[160];
   if(strcmp(last_reason, activity.reason)) {
     logq("Activity detection: %s", activity.unknown ? activity.reason : "recovered");
@@ -257,7 +290,12 @@ pending_find(const char *uid, const char *title, int ps5) {
 static void
 pending_defer(const char *uid, const char *title, int ps5) {
   g_cycle_deferred = 1;
-  if(!title_valid(title)) {logq("Unsupported title ID deferred: %s", title); return;}
+  if(activity.unknown)
+    notify_problem(NOTICE_WARNING, "title-activity", NULL, "Game activity is unknown. Save backup postponed.");
+  if(!title_valid(title)) {
+    notify_problem(NOTICE_WARNING, "unsupported-title", title, "Save backup postponed: unsupported title ID.");
+    return;
+  }
   pending_title_t *p = pending_find(uid, title, ps5);
   if(!p) {
     p = calloc(1, sizeof *p);
@@ -267,7 +305,7 @@ pending_defer(const char *uid, const char *title, int ps5) {
     p->ps5 = ps5;
     p->next = pending_titles;
     pending_titles = p;
-    notify("Save backup postponed (%s).", title);
+    if(!activity.unknown) notify_info("Save backup postponed (%s).", title);
   }
   p->ready = 0;
   p->retry_at = 0;
