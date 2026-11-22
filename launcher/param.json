@@ -1,0 +1,13 @@
+{
+  "titleId": "P5SV00001",
+  "applicationCategoryType": 65536,
+  "deeplinkUri": "http://127.0.0.1:8755/",
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": { "titleName": "PS5Save+" },
+    "pt-PT": { "titleName": "PS5Save+" },
+    "pt-BR": { "titleName": "PS5Save+" },
+    "es-ES": { "titleName": "PS5Save+" },
+    "fr-FR": { "titleName": "PS5Save+" }
+  }
+}
