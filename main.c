@@ -629,9 +629,14 @@ backup_activity_begin(const char *message) {
 static pthread_mutex_t file_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void persist_log_line(const char *message) {
   pthread_mutex_lock(&file_log_mutex);
-  const char *dir = USB_ROOT "/ps5save-plus";
+  const char *dir = STORAGE_ROOT;
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *path = storage_log_path;
+  const char *old = storage_log_rotated;
+#else
   const char *path = USB_ROOT "/ps5save-plus/events.log";
   const char *old = USB_ROOT "/ps5save-plus/events.log.1";
+#endif
   if(!access(CONF_PATH, R_OK) && !mkdir_p(dir)) {
     struct stat st;
     if(!stat(path, &st) && st.st_size >= 256 * 1024) {
@@ -812,7 +817,11 @@ static int storage_default_config(void) {
   }
   if(errno != ENOENT) return -1;
 
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *temp = storage_conf_part;
+#else
   const char *temp = CONF_PATH ".part";
+#endif
   int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if(fd < 0 && errno == EEXIST) {
     /* Incomplete file from an interrupted earlier attempt. No real config
@@ -890,7 +899,11 @@ static int storage_prepare(void) {
   if(storage_move_legacy(LEGACY_BACKUP_ROOT, BACKUP_ROOT, 1) < 0 ||
      storage_move_legacy(LEGACY_DAILY_ROOT, DAILY_ROOT, 1) < 0 ||
      storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0 ||
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+     storage_move_legacy(LEGACY_CONF_BAK, storage_conf_bak, 0) < 0)
+#else
      storage_move_legacy(LEGACY_CONF_BAK, CONF_PATH ".bak", 0) < 0)
+#endif
     return -1;
   return storage_default_config() < 0 ? -1 : 0;
 }
