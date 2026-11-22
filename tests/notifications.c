@@ -588,6 +588,29 @@ test_concurrent(void) {
 }
 
 static void
+test_lock_recovery(void) {
+  int lock=acquire_lock();
+  assert(lock>=0);
+  assert(!restore_instance_lock(&lock));
+  assert(lock>=0);
+  struct sockaddr_in addr={0};
+  socklen_t len=sizeof addr;
+  assert(!getsockname(lock,(struct sockaddr*)&addr,&len));
+  assert(ntohs(addr.sin_port)>0);
+  int peer=socket(AF_INET,SOCK_STREAM,0);
+  assert(peer>=0);
+  assert(!connect(peer,(struct sockaddr*)&addr,sizeof addr));
+  struct pollfd pfd={.fd=lock,.events=POLLIN};
+  assert(poll(&pfd,1,1000)>0 && (pfd.revents&POLLIN));
+  int accepted=accept(lock,NULL,NULL);
+  assert(accepted>=0);
+  close(accepted);
+  close(peer);
+  close(lock);
+  puts("PASS exclusive backup instance listener safely rebinds");
+}
+
+static void
 test_layout(void) {
   /* New installation creates only the missing configuration and announces
    * the event through Debug, not the normal backup notification system. */
@@ -674,6 +697,7 @@ main(int argc, char **argv) {
   else if(!strcmp(argv[1], "progress")) test_progress();
   else if(!strcmp(argv[1], "terminal")) test_terminal_toast();
   else if(!strcmp(argv[1], "language")) test_languages();
+  else if(!strcmp(argv[1], "lock")) test_lock_recovery();
   else if(!strcmp(argv[1], "recovery")) test_recovery();
   else if(!strcmp(argv[1], "concurrent")) test_concurrent();
   else abort();
