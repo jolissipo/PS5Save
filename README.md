@@ -1,106 +1,77 @@
-<img width="128" height="128" alt="PS5Save" src="notification.png" />
+# PS5Save+
 
-# PS5Save - Automatic game save and file backups!
-Easy to use USB save backup utility for jailbroken PS5s that helps you prevent data loss!  
-- Fully automatic with daily snapshots, supports PS5 saves, PS4 saves, emulator saves and other files
-<img width="1280" height="720" alt="PS5Save notification screenshot" src="https://github.com/user-attachments/assets/cbef0c27-b218-4da1-943c-f6c0da6e0ef4" />
+**Automatic PS5 save backups, with clearer notifications and a built-in web dashboard.**
 
+PS5Save+ is our fork of [PS5Save](https://github.com/heni0xyz/PS5Save). We created it to keep the original project's straightforward, reliable backup approach while improving the everyday experience: fewer interruptions, more visibility into saved data, simpler configuration and one payload for the entire workflow.
 
-# Guide
-- Get a fast USB storage device that is big enough to fit all of your saves (formatted as exFAT)
-- Create a `backup.conf` file on the root of your USB
-- Fill `backup.conf` with your personalized values (look at Backup Configuration section)
-- Plug in into your PS5
-- Push the backup.elf payload to your PS5 using a network loader or an autoloader of your choice
+> **Alpha software.** The unified payload, dashboard and launcher have been tested on PS5 firmware 11.60. Keep independent copies of important saves while the project remains in alpha.
 
-PS4/PS5 saves will backed up while in-game except for the game you're currently playing it will be backed up after you exit the title *(since version v2)*
+## Features
 
-# Backup Configuration
-Example: 
-```
-# Delay between backup passes in seconds (int, min 30 max 3600)
-backup_interval_seconds=30
+- **Automatic incremental backups:** decrypted PS4/PS5 saves, original encrypted save files, trophy data and optional custom directories for emulators.
+- **Daily snapshots:** dated copies of the live backup, with configurable retention.
+- **Thoughtful notifications:** meaningful completion and error alerts, adaptive progress updates for longer operations, immediate completion toasts that replace obsolete percentages, and automatic translation for selected console languages.
+- **Web dashboard:** backup status, file explorer, independently browsable live backups and daily snapshots, sizes, operation history and diagnostic logs.
+- **Easy settings:** edit `backup.conf` from the browser after authorising the session with a code shown on the PS5.
+- **Home-screen shortcut:** automatically installs the PS5Save+ dashboard tile if missing. Subsequent launches do not reinstall it.
+- **One ELF:** no separate launcher, database or web service required.
 
-# Enable decrypted PS4 save backups (false, true)
-backup_ps4_saves=true
+The backup service runs in the background while the payload remains active. Saves belonging to a running or suspended game are deferred until that title closes; for consistent original encrypted saves and trophy copies, close the game before the backup pass.
 
-# Enable decrypted PS5 save backups (false, true)
-backup_ps5_saves=true
+## Getting started
 
-# Copy original encrypted PS4 and PS5 saves, including PS4 companion keys
-backup_encrypted_saves=false
+1. Connect an **exFAT USB drive** with enough free space for your backups and snapshots.
+2. Download **`ps5saveplus_v0.1.0-alpha.2.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
+3. On first launch, PS5Save+ creates `/mnt/usb0/ps5save-plus/backup.conf` with its default settings if it does not exist, starts backup checks and attempts to install the dashboard shortcut.
+4. Open the PS5Save+ shortcut, or use `http://<PS5-IP>:8755/` from a device on the same trusted network.
 
-# Copy PS4 and PS5 trophy progress and catalogs to USB
-backup_ps4_trophies=false
-backup_ps5_trophies=false
+To change settings, open **Settings → Unlock editing on PS5**, then enter the temporary code shown in a native console notification.
 
-# Maximum combined save-image size per title in MB (int)
-max_title_size_mb=4096
+The shortcut opens the web dashboard; it **does not automatically restart the payload** after a console reboot.
 
-# Number of dated snapshots retained, values 0 thru 10 are valid; 0 means disabled (int)
-daily_snapshots_to_keep=2
+### USB layout
 
-# File backup section with most popular emulators listed
-
-# PS5SX2
-/data/PCSX2/Mcd001.ps2
-/data/PCSX2/Mcd002.ps2
-
-# PS5SX3
-/data/homebrew/PPSA99303/rpcs3/dev_hdd0/home/
-
-# Porpoise
-/data/porpoise/saves/
-
-# ProsperoEden
-/data/prosperoeden/user/nand
-
-# PS5X360
-/data/homebrew/PPSA50011/saves
+```text
+ps5save-plus/
+├── backup.conf
+├── backup/                    # Current backup
+├── backup_daily/YYYY-MM-DD/   # Dated snapshots
+├── events.log                 # Rotating diagnostics
+└── history.tsv                # Backup activity
 ```
 
-Encrypted saves and trophies default to off. Each setting works independently of decrypted save backups.
+If the older PS5Save layout exists in the USB root, PS5Save+ attempts to move the original configuration and backup folders into `ps5save-plus/` without recopying all the data. If both old and new backup directories already exist, it stops rather than merge or overwrite them. Back up valuable data before testing migration.
 
-- Encrypted PS4 and PS5 saves keep their original filenames and directory structure under `/backup/user/home/<USER_ID>/savedata/` and `/backup/user/home/<USER_ID>/savedata_prospero/` on the USB. These copies include PS4 `.bin` companion files. The decrypted per-title size limit does not apply to these copies.
-- Trophy backups copy the per-user `trophy` and `trophy2` directories and the shared catalogs under `/user/trophy` and `/user/trophy2` when present. The USB copies preserve those paths under `/backup`.
-- These options copy files individually on regular backup passes. For a consistent copy of a game's save and trophy files, close the game before running a pass.
+### Configuration
 
-## Credits
-- n0llptr — [Playstation 5 Save Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter)
-- earthonion — loading game titles code and save creation: [Garlic SaveMgr](https://git.etawen.dev/earthonion/garlic-savemgr)
-- cow — save mounting research using internal PS5 `sceFs*` functions
+The [default backup.conf](backup.conf) can also be edited directly on the USB. Essential options:
 
-## Building
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `backup_interval_seconds` | `30` | Interval between regular checks |
+| `backup_notifications` | `all` | `all`, `errors` or `off` |
+| `backup_notifications_in_game` | `false` | Suppress notifications while playing |
+| `backup_ps4_saves` / `backup_ps5_saves` | `true` | Decrypted saves |
+| `backup_encrypted_saves` | `true` | Original save files |
+| `backup_ps4_trophies` / `backup_ps5_trophies` | `true` | Trophy data |
+| `daily_snapshots_to_keep` | `3` | Number of daily snapshots retained |
 
-Requires Linux (for example Ubuntu 24.04) and the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk).
+Optional emulator paths can be enabled in `backup.conf` or added through the advanced editor.
 
-Install the build tools
+## Build
+
+Requires the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) and its Linux toolchain.
 
 ```sh
-sudo apt update
-sudo apt install make clang-18 lld-18 llvm-18 wget unzip
+make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+sh tests/run-host-tests.sh
 ```
 
-Download and extract the SDK
+The output is `ps5saveplus.elf`. Release downloads use a versioned filename. GitHub Actions runs host regression tests and cross-compiles the PS5 executable.
 
-```sh
-wget https://github.com/ps5-payload-dev/sdk/releases/download/v0.45/ps5-payload-sdk.zip
-unzip ps5-payload-sdk.zip
-export PS5_PAYLOAD_SDK="$(pwd)/ps5-payload-sdk"
-export LLVM_CONFIG=llvm-config-18
-```
+## Notes and credits
 
-Open the PS5Save source directory, then run:
-
-```sh
-make
-```
-
-The compiled payload is `backup.elf`.
-
-To rebuild after changing the source:
-
-```sh
-make clean
-make
-```
+- **Security:** the dashboard uses HTTP on port **8755**. Keep it on a trusted local network; never expose it directly to the internet. Editing requires a temporary code displayed on the PS5.
+- **Backup verification:** the dashboard inventories files present on USB; it does not perform cryptographic verification of every original save.
+- **Project origin:** based on PS5Save by [heni0xyz and contributors](https://github.com/heni0xyz/PS5Save). The fork retains and builds on their backup implementation. Additional research and components are credited in the source.
+- **Licence:** [GPL-3.0](LICENSE).

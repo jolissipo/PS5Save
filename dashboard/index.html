@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>PS5Save+ · Dashboard</title>
+<style>
+:root{font-family:Arial,Helvetica,sans-serif;color:#ebeff8;background:#101622;font-size:15px}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#101622}
+.wrap{max-width:950px;margin:0 auto;padding:24px 18px 54px}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:25px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-icon{display:grid;place-items:center;width:44px;height:44px;border:1px solid #607eaf;border-radius:13px;background:#1a2b46;color:#b8d5ff;font-size:21px;font-weight:bold}
+h1{font-size:26px;line-height:1.2;letter-spacing:-.5px;margin:0}
+.subtitle{margin:5px 0 0;color:#9caac2;font-size:13px}
+.pill{border:1px solid #54667e;border-radius:99px;padding:8px 13px;color:#e4eaf5;font-size:13px;background:#202b3c}
+.pill.ok{border-color:#438b72;color:#bcf1d9;background:#18352e}
+.pill.bad{border-color:#ae6b61;color:#ffd3cf;background:#412525}
+nav{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+nav button{border:1px solid #39495f;border-radius:9px;background:#1c2636;color:#c1cde0;padding:11px 17px;font:inherit;cursor:pointer}
+nav button[aria-pressed="true"]{border-color:#7f9ed9;color:#fff;background:#2a426b}
+nav button:focus-visible,.secondary-button:focus-visible{outline:3px solid #9cc3ff;outline-offset:2px}
+.secondary-button{font:inherit;cursor:pointer;padding:9px 14px;border:1px solid #55749d;background:#243956;color:#e6f0ff;border-radius:8px}
+h2{font-size:17px;margin:0 0 17px}
+h3{font-size:14px;margin:0 0 12px;color:#dce5f4}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:20px}
+.card,.panel{border:1px solid #344359;border-radius:13px;background:#1a2433}
+.card{padding:19px}
+.card small{display:block;color:#a8b5c9;margin-bottom:10px}
+.card strong{font-size:21px;font-weight:650;overflow-wrap:anywhere}
+.card .hint{font-size:12px;margin:8px 0 0;color:#a8b5c9}
+.panel{padding:21px;margin-bottom:15px}
+.muted{color:#a9b6cb}
+.small{font-size:13px;line-height:1.6}
+.stats{display:flex;gap:14px;flex-wrap:wrap;color:#b8c7de;font-size:13px;margin-top:12px}
+.stats b{color:#fff}
+.list{list-style:none;padding:0;margin:0}
+.list li{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:13px 0;border-bottom:1px solid #324053}
+.list li:last-child{border-bottom:0}
+.list li span:last-child{color:#aebbd0;font-size:13px;text-align:right}
+.explore-row{display:flex;align-items:center;gap:12px;justify-content:space-between;border-bottom:1px solid #324053;padding:10px 0}
+.explore-row:last-child{border-bottom:0}
+.explore-row button,.crumbs button{color:#c8dfff;background:transparent;border:0;padding:5px;cursor:pointer;font:inherit;text-align:left;overflow-wrap:anywhere}
+.explore-row button:hover,.crumbs button:hover{text-decoration:underline}
+.explore-row button:focus-visible,.crumbs button:focus-visible{outline:2px solid #9cc3ff;outline-offset:2px}
+.explore-row .detail{font-size:12px;color:#a8b5c9;text-align:right;flex-shrink:0}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:3px;padding:8px 0 13px}
+.file-mark{display:inline-block;min-width:27px;font-size:17px}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.panel-head h2{margin:0}
+#treeSummary{margin-top:12px}
+.status-good{color:#a4efc5}
+.status-error{color:#ffc0b8}
+.status-warn{color:#ffe2a3}
+label.field{display:block;margin:13px 0;font-size:13px;color:#c6d3e7}
+label.field select,label.field input{display:block;width:100%;max-width:360px;margin-top:7px;padding:10px;border-radius:8px;border:1px solid #587094;background:#101b2b;color:#f2f6ff;font:inherit}
+label.field input[type="checkbox"]{display:inline-block;width:auto;margin:0 9px 0 0}
+textarea{box-sizing:border-box;width:100%;height:240px;padding:13px;margin-top:12px;border:1px solid #587094;border-radius:9px;background:#101b2b;color:#eff4fa;font:13px/1.6 Consolas,monospace}
+select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #9cc3ff;outline-offset:2px}
+button[disabled]{opacity:.5;cursor:not-allowed}
+.message{margin-top:12px;color:#b4d3fc;min-height:20px}
+pre{padding:14px;border-radius:9px;overflow:auto;background:#121b29;border:1px solid #344359;color:#dfe7f6;max-height:420px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.65 Consolas,monospace}
+[hidden]{display:none!important}
+footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
+@media(max-width:610px){.wrap{padding:18px 13px 35px}.grid{grid-template-columns:1fr}.card{padding:15px}.panel{padding:16px}h1{font-size:23px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+ <div class="brand"><div class="brand-icon" aria-hidden="true">+</div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.2</p></div></div>
+ <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
+</header>
+<nav aria-label="Dashboard sections">
+ <button type="button" data-tab="overview" aria-pressed="true">Overview</button>
+ <button type="button" data-tab="backups" aria-pressed="false">Backups</button>
+ <button type="button" data-tab="settings" aria-pressed="false">Settings</button>
+</nav>
+<main>
+<section id="overview" class="tab">
+ <div class="grid">
+  <div class="card"><small>Last backup check</small><strong id="lastRun">—</strong><p class="hint" id="lastResult">Waiting for first pass</p></div>
+  <div class="card"><small>USB free space</small><strong id="usbFree">—</strong><p class="hint" id="usbTotal">Checking USB drive</p></div>
+  <div class="card"><small>Backup interval</small><strong id="interval">—</strong><p class="hint">Seconds between regular checks</p></div>
+  <div class="card"><small>Files copied in last pass</small><strong id="files">—</strong><p class="hint" id="bytes">No recent copy</p></div>
+ </div>
+ <div class="panel"><h2>Latest pass</h2><div id="passSummary" class="muted">Awaiting status…</div>
+ <div class="stats"><span>Skipped: <b id="skipped">0</b></span><span>Failed: <b id="failed">0</b></span><span>Daily snapshot: <b id="snapshot">—</b></span></div></div>
+ <div class="panel"><h2>Recent operations</h2><ul id="history" class="list"><li class="muted">No recorded operations yet.</li></ul></div>
+ <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Backup logs</button> <button class="secondary-button" id="installerLogs" type="button">Launcher installer logs</button><pre id="logs" hidden></pre></div>
+</section>
+<section id="backups" class="tab" hidden>
+ <div class="panel" id="liveBackupPanel">
+  <h2>Live backup</h2>
+  <p class="small muted">Current backup on your USB. Open any folder below to inspect its saved files.</p>
+  <p id="liveSummary" class="small muted">Loading backup inventory…</p>
+  <div id="liveTrail" class="crumbs" aria-label="Live backup directory path"></div>
+  <div id="liveItems" aria-live="polite"></div>
+  <button class="secondary-button" id="liveMore" type="button" hidden>Show more files</button>
+ </div>
+ <div class="panel" id="snapshotBackupPanel">
+  <h2>Daily snapshots</h2>
+  <p class="small muted">Previous versions preserved on the selected date. Browse them below without changing the current backup.</p>
+  <label class="field" for="snapshotPicker">Snapshot date
+    <select id="snapshotPicker" aria-label="Choose a daily snapshot">
+      <option value="">Loading snapshots…</option>
+    </select>
+  </label>
+  <div id="snapshotContent" hidden>
+    <p id="snapshotSummary" class="small muted">Select a snapshot to inspect its contents.</p>
+    <div id="snapshotTrail" class="crumbs" aria-label="Snapshot directory path"></div>
+    <div id="snapshotItems" aria-live="polite"></div>
+    <button class="secondary-button" id="snapshotMore" type="button" hidden>Show more files</button>
+  </div>
+  <p class="small muted">Each snapshot reflects the live backup at creation time, not later changes.</p>
+ </div>
+ <p class="small muted">File lists show what exists on the USB; they do not verify the integrity or completeness of the original saves. File restoration is not available here.</p>
+</section>
+<section id="settings" class="tab" hidden>
+ <div class="panel"><h2>Settings</h2>
+ <p class="muted small">You can always read your configuration. To make changes, enter a temporary pairing code displayed in a PS5 notification. Editing is only available on a trusted local network.</p>
+ <button class="secondary-button" id="requestPair" type="button">Unlock editing on PS5</button>
+ <form id="pairForm" hidden>
+  <label class="field">6-digit code from your PS5
+  <input id="pairCode" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+  <button class="secondary-button" type="submit">Confirm pairing</button>
+ </form>
+ <p id="pairMessage" role="status" class="message small"></p></div>
+ <div class="panel" id="settingsForm" hidden><h2>Backup preferences</h2>
+ <form id="preferences">
+  <label class="field">Check every
+   <select name="backup_interval_seconds"><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
+  <label class="field">Notifications
+   <select name="backup_notifications"><option value="all">All useful notifications</option><option value="errors">Warnings and errors only</option><option value="off">Off</option></select></label>
+  <label class="field"><input type="checkbox" name="backup_notifications_in_game">Show notifications during games</label>
+  <label class="field"><input type="checkbox" name="backup_ps4_saves">Decrypted PS4 saves</label>
+  <label class="field"><input type="checkbox" name="backup_ps5_saves">Decrypted PS5 saves</label>
+  <label class="field"><input type="checkbox" name="backup_encrypted_saves">Original encrypted saves</label>
+  <label class="field"><input type="checkbox" name="backup_ps4_trophies">PS4 trophies</label>
+  <label class="field"><input type="checkbox" name="backup_ps5_trophies">PS5 trophies</label>
+  <label class="field">Daily snapshots to retain
+   <select name="daily_snapshots_to_keep"><option value="0">Off</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="10">10</option></select></label>
+  <label class="field">Maximum save-image size per title (MB)
+   <input type="number" name="max_title_size_mb" min="64" max="65536" step="1"></label>
+  <button class="secondary-button" type="submit">Save preferences</button>
+ </form>
+ <p class="small muted">Other settings and custom source paths are preserved exactly as written.</p>
+ <p id="saveMessage" role="status" class="message small"></p>
+ </div>
+ <div class="panel"><h2>backup.conf</h2>
+ <p class="muted small">Current file on USB. Advanced editing of custom emulator paths is available after pairing.</p>
+ <pre id="config">Loading backup.conf…</pre>
+ <details id="advanced" hidden><summary>Advanced: edit backup.conf directly</summary>
+ <textarea id="rawConfig" spellcheck="false" aria-label="Advanced backup.conf editor"></textarea>
+ <button id="saveRaw" class="secondary-button" type="button">Save entire configuration</button>
+ <p class="small muted">Invalid paths or settings will be rejected. The previous file is preserved as backup.conf.bak.</p></details>
+ </div>
+</section>
+</main>
+<footer>
+ <div>PS5Save+ · Based on PS5Save by heni0xyz and contributors.</div>
+ <div>The file browser is read-only. Configuration changes require PS5 pairing. Keep TCP 8755 on your trusted LAN.</div>
+</footer>
+</div>
+<script>
+(function(){
+  "use strict";
+  function byId(id){return document.getElementById(id);}
+  function text(id,value){byId(id).textContent=value;}
+  function size(n){if(!n)return "0 B";var u=["B","kB","MB","GB","TB"],i=0;while(n>=1000&&i<u.length-1){n/=1000;i++;}return (i?n.toFixed(n<10?1:0):String(n))+" "+u[i];}
+  function date(ts){if(!ts)return "—";var d=new Date(ts*1000);return isNaN(d.getTime())?"—":d.toLocaleString();}
+  function request(path){return fetch(path,{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r;});}
+  function lines(s){return s.split(/\r?\n/).filter(function(x){return x.trim().length>0;});}
+  function line(id,left,right){var li=document.createElement("li"),a=document.createElement("span"),b=document.createElement("span");a.textContent=left;b.textContent=right||"";li.appendChild(a);li.appendChild(b);byId(id).appendChild(li);}
+  function status(){
+    request("/api/status").then(function(r){return r.json();}).then(function(x){
+      var badge=byId("overall");
+      badge.className="pill "+(x.usbOnline?"ok":"bad");
+      badge.textContent=!x.usbOnline?"USB unavailable":x.running?"Backup in progress":"Protection active";
+      text("lastRun",x.hasRun?date(x.lastRun):"Pending");
+      text("usbFree",x.usbOnline?size(x.usbFree):"Unavailable");
+      text("usbTotal",x.usbOnline?size(x.usbTotal)+" total":"Connect your USB backup drive");
+      text("interval",x.interval?x.interval+" s":"—");
+      text("files",x.hasRun?String(x.copied):"—");
+      text("bytes",x.hasRun?size(x.bytes)+" copied":"No recent data");
+      text("skipped",String(x.skipped));
+      text("failed",String(x.failed));
+      text("snapshot",x.snapshot>0?"Created":x.snapshot<0?"Failed":"Unchanged");
+      var description=x.failed?"Last pass included backup failures. Check the console notifications and logs.":
+                      x.deferred?"Some saves are waiting for the game to close.":
+                      x.skipped?"Some data was skipped. Check the console notifications.":
+                      x.running?"Backup check is in progress.":
+                      x.copied?"Last backup finished.":"No changes in the last pass.";
+      text("passSummary",x.hasRun||x.running?description:"Waiting for the first backup pass.");
+      text("lastResult",x.failed?"Problems detected":x.deferred?"Some saves deferred":x.hasRun?"Last check completed":"Starting…");
+    }).catch(function(){
+      var badge=byId("overall");badge.className="pill bad";badge.textContent="Disconnected";
+    });
+  }
+  function history(){
+    request("/api/history").then(function(r){return r.text();}).then(function(s){
+      var entries=lines(s).slice(-18).reverse();byId("history").textContent="";
+      if(!entries.length){line("history","No recorded operations yet");return;}
+      entries.forEach(function(l){
+        var v=l.split("\t"),status=v[1]||"unknown",n=Number(v[2])||0;
+        line("history",status.toUpperCase()+" · "+size(n)+" · "+(v[3]||0)+" files",v[0]||"");
+      });
+    }).catch(function(){byId("history").textContent="";line("history","No saved history yet");});
+  }
+  /* Separate state per panel: navigating a snapshot never replaces the
+   * live backup directory, and vice versa. */
+  var explorers={
+    live:{root:"live",date:"",path:"",next:null,version:0},
+    snapshot:{root:"snapshot",date:"",path:"",next:null,version:0}
+  };
+  function backupQuery(explorer,endpoint){
+    var url=endpoint+"?root="+explorer.root;
+    if(explorer.date)url+="&date="+encodeURIComponent(explorer.date);
+    return url;
+  }
+  function addExplorerMessage(id,message){
+    var p=document.createElement("p");p.className="small muted";
+    p.textContent=message;byId(id).appendChild(p);
+  }
+  function snapshotList(){
+    request("/api/snapshots").then(function(r){return r.text();}).then(function(s){
+      var dates=lines(s).filter(function(d){return /^\d{4}-\d{2}-\d{2}$/.test(d);}).sort().reverse();
+      var select=byId("snapshotPicker");
+      select.textContent="";
+      var first=document.createElement("option");first.value="";first.textContent="Choose a date";
+      select.appendChild(first);
+      if(!dates.length){
+        first.textContent="No daily snapshots found";
+        select.disabled=true;
+        byId("snapshotContent").hidden=true;
+        return;
+      }
+      select.disabled=false;
+      dates.forEach(function(day){
+        var option=document.createElement("option");
+        option.value=day;option.textContent=day;select.appendChild(option);
+      });
+      /* The most recent snapshot is the default view; the user can change
+       * the date without ever losing the live backup panel. */
+      var previous=explorers.snapshot.date;
+      select.value=dates.indexOf(previous)!==-1?previous:dates[0];
+      openBrowser("snapshot",select.value,"");
+    }).catch(function(){
+      var select=byId("snapshotPicker");
+      select.textContent="";
+      var option=document.createElement("option");
+      option.value="";option.textContent="Snapshots unavailable";
+      select.appendChild(option);select.disabled=true;
+      byId("snapshotContent").hidden=true;
+    });
+  }
+  function openBrowser(root,day,path){
+    var state=explorers[root];
+    if(!state)return;
+    var changed=state.date!==(day||"");
+    state.date=day||"";
+    state.path=path||"";
+    state.next=null;state.version++;
+    if(root==="snapshot")byId("snapshotContent").hidden=!state.date;
+    var items=byId(root+"Items");items.textContent="";
+    byId(root+"More").hidden=true;
+    var trail=byId(root+"Trail");trail.textContent="";
+    var parts=state.path?state.path.split("/"):[];
+    ["Backup"].concat(parts).forEach(function(name,i){
+      if(i){var sep=document.createElement("span");sep.textContent="/";trail.appendChild(sep);}
+      var button=document.createElement("button");button.type="button";button.textContent=name;
+      var ancestor=parts.slice(0,i).join("/");
+      button.addEventListener("click",function(){openBrowser(root,day,ancestor);});
+      trail.appendChild(button);
+    });
+    if(!state.path || changed)text(root+"Summary","Loading file inventory…");
+    if(root==="live"||state.date)loadTree(root,false);
+  }
+  function loadTree(root,more){
+    var state=explorers[root], version=state.version;
+    var day=state.date, folder=state.path;
+    var url=backupQuery(state,"/api/tree")+"&path="+encodeURIComponent(folder);
+    if(more && state.next)url+="&after="+encodeURIComponent(state.next);
+    if(!more){
+      byId(root+"Items").textContent="";
+      addExplorerMessage(root+"Items","Loading directory…");
+    }
+    byId(root+"More").hidden=true;
+    request(url).then(function(r){return r.json();}).then(function(result){
+      if(version!==state.version)return;
+      var target=byId(root+"Items");
+      if(!more)target.textContent="";
+      if(!result.entries.length&&!more)addExplorerMessage(root+"Items","This folder contains no files.");
+      result.entries.forEach(function(item){
+        var row=document.createElement("div");row.className="explore-row";
+        var name=document.createElement(item.dir?"button":"span");
+        if(item.dir)name.type="button";
+        var icon=document.createElement("span");icon.className="file-mark";
+        icon.textContent=item.dir?"📁":"📄";
+        name.appendChild(icon);name.appendChild(document.createTextNode(item.name));
+        if(item.dir){
+          var child=folder?folder+"/"+item.name:item.name;
+          name.addEventListener("click",function(){openBrowser(root,day,child);});
+        }
+        var detail=document.createElement("span");detail.className="detail";
+        detail.textContent=(item.dir?"Folder":size(item.size))+" · "+date(item.mtime);
+        row.appendChild(name);row.appendChild(detail);target.appendChild(row);
+      });
+      state.next=result.next;
+      byId(root+"More").hidden=!result.next;
+      if(!more && !folder){
+        request(backupQuery(state,"/api/summary")).then(function(r){return r.json();}).then(function(data){
+          if(version!==state.version)return;
+          var desc=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
+          desc+=data.complete?" · Filesystem inventory":" · Partial inventory (limit or unreadable entry)";
+          text(root+"Summary",desc);
+        }).catch(function(){
+          if(version===state.version)
+            text(root+"Summary","Inventory unavailable; file navigation is still possible.");
+        });
+      }
+    }).catch(function(){
+      if(version!==state.version)return;
+      if(!more)byId(root+"Items").textContent="";
+      addExplorerMessage(root+"Items","Cannot read this folder. Check the USB and try again.");
+    });
+  }
+  byId("snapshotPicker").addEventListener("change",function(value){
+    var date=byId("snapshotPicker").value;
+    if(date)openBrowser("snapshot",date,"");
+    else byId("snapshotContent").hidden=true;
+  });
+  ["live","snapshot"].forEach(function(root){
+    byId(root+"More").addEventListener("click",function(){
+      if(explorers[root].next)loadTree(root,true);
+    });
+  });
+  var sessionToken="",configSource="",configVersion="";
+  var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
+  var keys=["backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
+  function configuration(){
+    Promise.all([request("/api/config").then(function(r){return r.text();}),
+                 request("/api/config-version").then(function(r){return r.text();})])
+    .then(function(v){
+      configSource=v[0];configVersion=v[1].trim();text("config",configSource);
+      byId("rawConfig").value=configSource;
+      var values={};
+      configSource.split(/\r?\n/).forEach(function(line){
+        var match=line.match(/^\\s*([a-z_]+)\\s*=\\s*(.*?)\\s*$/);
+        if(match)values[match[1]]=match[2];
+      });
+      var form=byId("preferences");
+      keys.forEach(function(key){
+        var el=form.elements.namedItem(key);if(!el)return;
+        var value=values[key];
+        if(typeof value==="undefined")return;
+        if(boolKeys.indexOf(key)!==-1)el.checked=value==="true";
+        else if(el.tagName==="SELECT"&&!Array.prototype.some.call(el.options,function(o){return o.value===value;})){
+          var opt=document.createElement("option");opt.value=value;opt.textContent=value+" (custom)";el.appendChild(opt);el.value=value;
+        } else el.value=value;
+      });
+    }).catch(function(){text("config","backup.conf is not available.");});
+  }
+  function post(path,body,extra){
+    var headers={"X-PS5Save-Request":"1","Content-Type":"text/plain; charset=utf-8"};
+    if(extra)Object.keys(extra).forEach(function(k){headers[k]=extra[k];});
+    return fetch(path,{method:"POST",headers:headers,body:body}).then(function(r){
+      return r.text().then(function(s){if(!r.ok)throw Error(s||("HTTP "+r.status));return s;});
+    });
+  }
+  function replaceKey(original,key,value){
+    var rows=original.split("\n"),seen=false;
+    rows=rows.map(function(line){
+      var match=line.match(new RegExp("^(\\s*"+key+"\\s*=\\s*)([^\\r\\n]*)$"));
+      if(match){seen=true;return match[1]+value;}
+      return line;
+    });
+    if(!seen){if(rows.length&&rows[rows.length-1].trim())rows.push("");rows.push(key+"="+value);}
+    return rows.join("\n");
+  }
+  function saveConfiguration(newValue,outputId){
+    text(outputId,"Saving…");
+    post("/api/config",newValue,{"X-PS5Save-Session":sessionToken,"X-PS5Save-Version":configVersion})
+      .then(function(message){text(outputId,message);configuration();})
+      .catch(function(error){text(outputId,error.message);if(/changed elsewhere/i.test(error.message))configuration();});
+  }
+  byId("requestPair").addEventListener("click",function(){
+    text("pairMessage","Requesting code…");
+    post("/api/pair","").then(function(message){
+      text("pairMessage",message);byId("pairForm").hidden=false;byId("pairCode").focus();
+    }).catch(function(error){text("pairMessage",error.message);});
+  });
+  byId("pairForm").addEventListener("submit",function(event){
+    event.preventDefault();
+    post("/api/unlock",byId("pairCode").value).then(function(token){
+      if(!/^[0-9a-f]{32}$/.test(token))throw Error("Unexpected authorization response");
+      sessionToken=token;byId("pairForm").hidden=true;byId("settingsForm").hidden=false;byId("advanced").hidden=false;
+      text("pairMessage","Editing enabled for this session.");configuration();
+    }).catch(function(error){text("pairMessage",error.message);});
+  });
+  byId("preferences").addEventListener("submit",function(event){
+    event.preventDefault();
+    if(!sessionToken||!configVersion)return;
+    var form=byId("preferences"),result=configSource;
+    keys.forEach(function(key){
+      var el=form.elements.namedItem(key);if(!el)return;
+      var value=boolKeys.indexOf(key)!==-1?(el.checked?"true":"false"):el.value;
+      result=replaceKey(result,key,value);
+    });
+    saveConfiguration(result,"saveMessage");
+  });
+  byId("saveRaw").addEventListener("click",function(){
+    if(!sessionToken||!configVersion)return;
+    saveConfiguration(byId("rawConfig").value,"saveMessage");
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(button){
+    button.addEventListener("click",function(){
+      var selected=button.getAttribute("data-tab");
+      Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(b){b.setAttribute("aria-pressed",b===button?"true":"false");});
+      Array.prototype.forEach.call(document.querySelectorAll(".tab"),function(el){el.hidden=el.id!==selected;});
+      if(selected==="backups"){openBrowser("live","","");snapshotList();}
+      if(selected==="settings")configuration();
+    });
+  });
+  byId("viewLogs").addEventListener("click",function(){
+    var el=byId("logs");el.hidden=false;el.textContent="Loading…";
+    request("/api/logs").then(function(r){return r.text();}).then(function(s){el.textContent=s||"No recent entries.";}).catch(function(){el.textContent="No diagnostic logs are available.";});
+  });
+  byId("installerLogs").addEventListener("click",function(){
+    var el=byId("logs");el.hidden=false;el.textContent="Loading installer log…";
+    request("/api/installer-log").then(function(r){return r.text();}).then(function(s){
+      el.textContent=s||"No installer activity recorded.";
+    }).catch(function(){
+      el.textContent="No launcher-installer.log found on USB. Check that the correct installer ELF ran; if no file exists, the loader may have rejected it before execution.";
+    });
+  });
+  status();history();
+  setInterval(status,12000);
+  setInterval(history,60000);
+})();
+</script>
+</body>
+</html>

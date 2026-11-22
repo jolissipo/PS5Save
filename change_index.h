@@ -110,7 +110,20 @@ index_load(void) {
        fread(&source, 1, sizeof source, f) != sizeof source ||
        fread(&target, 1, sizeof target, f) != sizeof target) {valid = 0; break;}
     path[len] = 0;
-    if(strlen(path) != len || strncmp(path, BACKUP_ROOT "/", strlen(BACKUP_ROOT) + 1)) {valid = 0; break;}
+    if(strlen(path) != len) {valid = 0; break;}
+    /* Old USB backups were moved by rename(), so their contents and source
+     * signatures are still valid. Upgrade only the path prefix inside the
+     * persistent cache to avoid re-copying gigabytes of unchanged saves. */
+    const size_t old_prefix = strlen(LEGACY_BACKUP_ROOT);
+    if(!strncmp(path, LEGACY_BACKUP_ROOT "/", old_prefix + 1)) {
+      char migrated[PATH_MAX];
+      int length = snprintf(migrated, sizeof migrated, "%s%s",
+                            BACKUP_ROOT, path + old_prefix);
+      if(length < 0 || (size_t)length >= sizeof migrated) {valid = 0; break;}
+      strcpy(path, migrated);
+      index_dirty = 1;  /* Rewrite as the new layout on the next pass. */
+    }
+    if(strncmp(path, BACKUP_ROOT "/", strlen(BACKUP_ROOT) + 1)) {valid = 0; break;}
     change_record_t *r = index_record(path, 1);
     if(!r) {valid = 0; break;}
     r->source = source; r->target = target;
@@ -123,7 +136,10 @@ static void
 index_save(void) {
   if(!index_dirty) return;
   FILE *f = fopen(INDEX_PATH ".part", "wb");
-  if(!f) {logq("Cannot save change cache; next pass may recopy files"); return;}
+  if(!f) {
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
+    return;
+  }
   int ok = fwrite("PS5IDX2\n", 1, 8, f) == 8;
   for(unsigned i = 0; i < INDEX_BUCKETS && ok; i++) {
     for(change_record_t *r = change_index[i]; r && ok; r = r->next) {
@@ -137,7 +153,8 @@ index_save(void) {
   if(fflush(f) || fsync(fileno(f))) ok = 0;
   if(fclose(f)) ok = 0;
   if(!ok || rename(INDEX_PATH ".part", INDEX_PATH)) {
-    unlink(INDEX_PATH ".part"); logq("Cannot commit change cache");
+    unlink(INDEX_PATH ".part");
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
   } else index_dirty = 0;
 }
 #endif
