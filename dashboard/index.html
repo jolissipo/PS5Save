@@ -21,7 +21,8 @@ h1{font-size:26px;line-height:1.2;letter-spacing:-.5px;margin:0}
 nav{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
 nav button{border:1px solid #39495f;border-radius:9px;background:#1c2636;color:#c1cde0;padding:11px 17px;font:inherit;cursor:pointer}
 nav button[aria-pressed="true"]{border-color:#7f9ed9;color:#fff;background:#2a426b}
-nav button:focus-visible{outline:3px solid #9cc3ff;outline-offset:2px}
+nav button:focus-visible,.secondary-button:focus-visible{outline:3px solid #9cc3ff;outline-offset:2px}
+.secondary-button{font:inherit;cursor:pointer;padding:9px 14px;border:1px solid #55749d;background:#243956;color:#e6f0ff;border-radius:8px}
 h2{font-size:17px;margin:0 0 17px}
 h3{font-size:14px;margin:0 0 12px;color:#dce5f4}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:20px}
@@ -71,6 +72,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <div class="panel"><h2>Latest pass</h2><div id="passSummary" class="muted">Awaiting status…</div>
  <div class="stats"><span>Skipped: <b id="skipped">0</b></span><span>Failed: <b id="failed">0</b></span><span>Daily snapshot: <b id="snapshot">—</b></span></div></div>
  <div class="panel"><h2>Recent operations</h2><ul id="history" class="list"><li class="muted">No recorded operations yet.</li></ul></div>
+ <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Show recent log entries</button><pre id="logs" hidden></pre></div>
 </section>
 <section id="backups" class="tab" hidden>
  <div class="panel"><h2>Daily snapshots</h2><p class="muted small">Completed snapshot directories found on the USB drive.</p>
@@ -153,6 +155,10 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       if(selected==="backups"){listing("/api/snapshots","snapshots","No daily snapshots found.");listing("/api/backups","backupRoots","No live backup folders found.");}
       if(selected==="settings")configuration();
     });
+  });
+  byId("viewLogs").addEventListener("click",function(){
+    var el=byId("logs");el.hidden=false;el.textContent="Loading…";
+    request("/api/logs").then(function(r){return r.text();}).then(function(s){el.textContent=s||"No recent entries.";}).catch(function(){el.textContent="No diagnostic logs are available.";});
   });
   status();history();
   setInterval(status,12000);
