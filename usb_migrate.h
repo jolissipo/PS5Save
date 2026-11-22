@@ -170,8 +170,9 @@ static int usb_migrate_to_unlocked(const char *target) {
   char notice[128];
   snprintf(notice, sizeof notice,
            "Backup USB changed. Copying to %s.", target);
-  usb_transfer_notice(0, notice);
+  atomic_store(&storage_migration_percent, 0);
   atomic_store(&storage_migrating, 1);
+  usb_transfer_notice(0, notice);
   int ok = 0;
   if(!mkdir(stage, 0700)) {
     char marker[PATH_MAX];
