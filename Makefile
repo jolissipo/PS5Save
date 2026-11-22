@@ -13,7 +13,7 @@ backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change
 
 # Optional, separate home-screen browser tile installer. Never run by default.
 launcher-installer.elf: launcher_installer.c launcher/param.json notification_icon.h
-	$(CC) $(CFLAGS) launcher_installer.c -lSceAppInstUtil -lSceNetCtl -lSceUserService -o $@
+	$(CC) $(CFLAGS) launcher_installer.c -lSceIpmi -lSceAppInstUtil -o $@
 
 .PHONY: all clean test
 test:
