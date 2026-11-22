@@ -18,7 +18,7 @@ ${CC:-cc} ${CFLAGS:-} -std=c11 -D_DEFAULT_SOURCE -UNDEBUG -Wall -Wextra -Werror 
   -DTEST_ROOT="\"$test_dir/fixture\"" -Itests/include \
   tests/notifications.c -o "$test_dir/notifications"
 
-for scenario in legacy settings errors off gameplay protection empty read-error snapshot progress language recovery concurrent; do
+for scenario in layout legacy settings errors off gameplay protection empty read-error snapshot progress language recovery concurrent; do
   rm -rf "$test_dir/fixture"
   if "$test_dir/notifications" "$scenario" >"$test_dir/log" 2>&1; then
     printf 'PASS %s\n' "$scenario"
