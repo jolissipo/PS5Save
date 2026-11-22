@@ -1,0 +1,307 @@
+/* Explicit cross-volume migration. Never writes backup data to internal storage.
+ * The destination is staged, compared byte-for-byte and committed atomically
+ * on its own USB volume before any source data may be deleted.
+ */
+#ifndef PS5SAVE_USB_MIGRATE_H
+#define PS5SAVE_USB_MIGRATE_H
+
+#define USB_STAGE_NAME ".ps5save-plus-transfer.part"
+#define USB_STAGE_MARK ".ps5save-owned-transfer"
+#define USB_STAGE_MAGIC "PS5Save+ USB transfer v1\n"
+#define USB_MIGRATION_DEPTH 48
+
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress);
+
+static int usb_transfer_file(const char *source, const char *target,
+                             const struct stat *source_st) {
+  struct stat existing;
+  if(!lstat(target, &existing)) {
+    /* Only reuse fully verified regular files from the owned staging tree. */
+    if(!S_ISREG(existing.st_mode)) return -1;
+    if(existing.st_size == source_st->st_size &&
+       !usb_compare_file(source, target, 0)) {
+      progress_advance((uint64_t)source_st->st_size);
+      return 0;
+    }
+  } else if(errno != ENOENT) return -1;
+  if(copy_file_keep_time(source, target, source_st)) return -1;
+  struct stat after;
+  if(lstat(source, &after) || after.st_size != source_st->st_size ||
+     after.st_mtime != source_st->st_mtime ||
+     !S_ISREG(after.st_mode)) return -1;
+  return 0;
+}
+
+static int usb_transfer_tree(const char *source, const char *target,
+                             unsigned depth) {
+  if(depth >= USB_MIGRATION_DEPTH) return -1;
+  if(mkdir(target, 0700) && errno != EEXIST) return -1;
+  struct stat dest_dir;
+  if(lstat(target, &dest_dir) || !S_ISDIR(dest_dir.st_mode)) return -1;
+  DIR *d = opendir(source);
+  if(!d) return -1;
+  int result = 0;
+  struct dirent *entry;
+  errno = 0;
+  while(!result && (entry = readdir(d))) {
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    /* The selection marker is recreated on the new volume after commit. */
+    if(!strcmp(entry->d_name, STORAGE_ACTIVE_MARKER)) continue;
+    char from[PATH_MAX], to[PATH_MAX];
+    struct stat st;
+    if(snprintf(from, sizeof from, "%s/%s", source, entry->d_name) >= (int)sizeof from ||
+       snprintf(to, sizeof to, "%s/%s", target, entry->d_name) >= (int)sizeof to ||
+       lstat(from, &st)) {result = -1; break;}
+    if(S_ISDIR(st.st_mode)) result = usb_transfer_tree(from, to, depth + 1);
+    else if(S_ISREG(st.st_mode)) result = usb_transfer_file(from, to, &st);
+    else result = -1; /* Refuse symlinks and unsupported nodes. */
+    errno = 0;
+  }
+  if(!entry && errno) result = -1;
+  closedir(d);
+  return result;
+}
+
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress) {
+  int f = open(from, O_RDONLY | O_NOFOLLOW);
+  if(f < 0) return -1;
+  int g = open(to, O_RDONLY | O_NOFOLLOW);
+  if(g < 0) {close(f);return -1;}
+  unsigned char a[32768], b[32768];
+  int result = 0;
+  for(;;) {
+    ssize_t n = read(f, a, sizeof a);
+    if(n < 0 && errno == EINTR) continue;
+    if(n < 0) {result = -1;break;}
+    if(n == 0) break;
+    size_t used = 0;
+    while(used < (size_t)n) {
+      ssize_t m = read(g, b + used, (size_t)n - used);
+      if(m < 0 && errno == EINTR) continue;
+      if(m <= 0) {result = -1;break;}
+      used += (size_t)m;
+    }
+    if(result || memcmp(a, b, (size_t)n)) {result = -1;break;}
+    /* Verification is half of the transfer work, not an unmeasured pause
+     * after copying has reached 50%. */
+    if(credit_progress) progress_advance((uint64_t)n);
+  }
+  if(!result) {
+    unsigned char tail;
+    ssize_t n = read(g, &tail, 1);
+    if(n != 0) result = -1;
+  }
+  if(close(f) || close(g)) result = -1;
+  return result;
+}
+
+static int usb_verify_tree(const char *source, const char *target,
+                            unsigned depth) {
+  if(depth >= USB_MIGRATION_DEPTH) return -1;
+  DIR *d = opendir(source);
+  if(!d) return -1;
+  int result = 0;
+  struct dirent *entry;
+  errno = 0;
+  while(!result && (entry = readdir(d))) {
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+       !strcmp(entry->d_name, STORAGE_ACTIVE_MARKER)) continue;
+    char from[PATH_MAX], to[PATH_MAX];
+    struct stat src, dst;
+    if(snprintf(from, sizeof from, "%s/%s", source, entry->d_name) >= (int)sizeof from ||
+       snprintf(to, sizeof to, "%s/%s", target, entry->d_name) >= (int)sizeof to ||
+       lstat(from, &src) || lstat(to, &dst)) {result = -1;break;}
+    if(S_ISDIR(src.st_mode) && S_ISDIR(dst.st_mode))
+      result = usb_verify_tree(from, to, depth + 1);
+    else if(S_ISREG(src.st_mode) && S_ISREG(dst.st_mode) &&
+            src.st_size == dst.st_size)
+      result = usb_compare_file(from, to, 1);
+    else result = -1;
+    errno = 0;
+  }
+  if(!entry && errno) result = -1;
+  closedir(d);
+  if(result) return result;
+
+  /* A recovered stage may contain stale files. Do not silently commit them. */
+  DIR *staged = opendir(target);
+  if(!staged) return -1;
+  errno = 0;
+  while(!result && (entry = readdir(staged))) {
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+       (!depth && !strcmp(entry->d_name, USB_STAGE_MARK))) continue;
+    char from[PATH_MAX];
+    struct stat expected;
+    if(snprintf(from, sizeof from, "%s/%s", source, entry->d_name) >=
+       (int)sizeof from || lstat(from, &expected)) result = -1;
+    errno = 0;
+  }
+  if(!entry && errno) result = -1;
+  closedir(staged);
+  return result;
+}
+
+static int usb_target_ready(const char *target, const char *validated_stage) {
+  uint64_t free_bytes;
+  if(!storage_usb_online(target, &free_bytes, NULL)) return 0;
+  struct stat from, to;
+  if(stat(USB_ROOT, &from) || stat(target, &to) || !S_ISDIR(to.st_mode))
+    return 0;
+#ifndef PS5SAVE_USB_TEST
+  /* Real PS5 drives must be distinct filesystems. Host fixtures live on
+   * the same test filesystem and exercise the remaining safety guards. */
+  if(from.st_dev == to.st_dev) return 0;
+#endif
+  uint64_t needed = dir_size(STORAGE_ROOT) + SPACE_MARGIN;
+  /* Reused bytes already occupy the destination drive. */
+  uint64_t staged = validated_stage ? dir_size(validated_stage) : 0;
+  if(staged > needed) staged = needed;
+  return free_bytes > needed - staged;
+}
+
+static int usb_migrate_to_unlocked(const char *target) {
+  if(storage_usb_number(target) < 0) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Only mounted USB drives can be backup destinations.");
+    return -1;
+  }
+  if(!strcmp(target, USB_ROOT)) return 0;
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Source USB is not mounted.");
+    return -1;
+  }
+  char source[PATH_MAX], destination[PATH_MAX], stage[PATH_MAX];
+  snprintf(source, sizeof source, "%s", STORAGE_ROOT);
+  if(snprintf(destination, sizeof destination, "%s/ps5save-plus", target) >= (int)sizeof destination ||
+     snprintf(stage, sizeof stage, "%s/%s", target, USB_STAGE_NAME) >= (int)sizeof stage)
+    return -1;
+
+  struct stat st;
+  if(!lstat(destination, &st)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Destination contains ps5save-plus already. Refusing to overwrite.");
+    return -1;
+  }
+  if(errno != ENOENT) return -1;
+
+  int recovering = 0;
+  if(!lstat(stage, &st)) {
+    /* Recover only an owned partial transfer. Never delete unknown data. */
+    char marker[PATH_MAX], contents[64] = "";
+    if(!S_ISDIR(st.st_mode) ||
+       snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK) >= (int)sizeof marker) {
+      snprintf(storage_move_error, sizeof storage_move_error,
+               "Unexpected transfer path; original preserved.");
+      return -1;
+    }
+    FILE *f = fopen(marker, "r");
+    if(f) {fgets(contents, sizeof contents, f);fclose(f);}
+    if(strcmp(contents, USB_STAGE_MAGIC)) {
+      snprintf(storage_move_error, sizeof storage_move_error,
+               "Unrecognized partial transfer; original preserved.");
+      return -1;
+    }
+    recovering = 1;
+  } else if(errno != ENOENT) return -1;
+
+  if(!usb_target_ready(target, recovering ? stage : NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Destination USB unavailable or has insufficient free space.");
+    return -1;
+  }
+  if(recovering) logq("USB transfer: recovering staged files in %s", stage);
+
+  /* Announce only after preflight checks have passed. Dynamic dashboard
+   * status stays available throughout the copy and verification. */
+  char notice[128];
+  snprintf(notice, sizeof notice,
+           "Backup USB changed. Copying to %s.", target);
+  atomic_store(&storage_migration_percent, 0);
+  atomic_store(&storage_migrating, 1);
+  usb_transfer_notice(0, notice);
+  int ok = 0;
+  if(recovering || !mkdir(stage, 0700)) {
+    char marker[PATH_MAX];
+    snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK);
+    int written = recovering;
+    if(!recovering) {
+      FILE *f = fopen(marker, "w");
+      if(f) {
+        written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
+        if(fclose(f)) written = 0;
+      }
+    }
+    if(written) {
+#ifndef PS5SAVE_USB_TEST
+      uint64_t size = dir_size(source);
+      progress_reset();
+      progress_plan(1);
+      /* Copy and byte-for-byte verification each contribute half. */
+      progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
+      progress_start(usb_progress_notification);
+#endif
+      int verified = !usb_transfer_tree(source, stage, 0) &&
+          !usb_verify_tree(source, stage, 0) &&
+          storage_usb_online(USB_ROOT, NULL, NULL) &&
+          storage_usb_online(target, NULL, NULL);
+#ifndef PS5SAVE_USB_TEST
+      progress_finish();
+      progress_stop(); /* Join the worker before any terminal toast. */
+#endif
+      if(verified) {
+        sync();
+        if(!rename(stage, destination)) ok = 1;
+      }
+    }
+  }
+
+  if(!ok) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "USB transfer or byte-for-byte verification failed. Original preserved.");
+    atomic_store(&storage_migrating, 0);
+    return -1; /* The marked staging directory is recoverable on next try. */
+  }
+
+  /* Both volumes must still be mounted after the staging commit. */
+  if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
+     !storage_usb_online(target, NULL, NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "USB disconnected during transfer. Original preserved.");
+    atomic_store(&storage_migrating, 0);
+    return -1;
+  }
+  /* All source data is still present here. Commit the new mount selection. */
+  char old_backup[PATH_MAX];
+  snprintf(old_backup, sizeof old_backup, "%s", BACKUP_ROOT);
+  storage_set_paths(target);
+  char stage_marker[PATH_MAX], active[PATH_MAX];
+  snprintf(stage_marker, sizeof stage_marker, "%s/%s", STORAGE_ROOT, USB_STAGE_MARK);
+  unlink(stage_marker);
+  snprintf(active, sizeof active, "%s/%s", STORAGE_ROOT, STORAGE_ACTIVE_MARKER);
+  unlink(active); /* old marker content named the previous USB mount */
+  index_rebase_usb(old_backup, BACKUP_ROOT);
+  index_save();
+  if(storage_mark_active()) {
+    /* The fully copied target remains intact even if the marker fails. */
+    logq("USB migration: could not save selection marker.");
+  }
+  /* Delete originals only after verified destination data is committed. */
+  if(remove_tree(source)) {
+    logq("USB migration completed, but old backup could not be deleted: %s", source);
+  }
+  storage_move_error[0] = 0;
+  atomic_store(&storage_migrating, 0);
+  logq("Backup storage transferred to %s", USB_ROOT);
+  usb_transfer_notice(1, "USB transfer complete.");
+  return 0;
+}
+static int usb_migrate_to(const char *target) {
+  pthread_mutex_lock(&storage_change_lock);
+  int result = usb_migrate_to_unlocked(target);
+  pthread_mutex_unlock(&storage_change_lock);
+  return result;
+}
+#endif

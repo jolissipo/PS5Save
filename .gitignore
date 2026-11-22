@@ -1,0 +1,9 @@
+# Local builds
+ps5saveplus.elf
+ps5saveplus_v*.elf
+
+# Native test output / temporary files
+*.o
+*.core
+core
+.DS_Store

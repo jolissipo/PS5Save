@@ -2,7 +2,11 @@
  * A missing/invalid cache causes a safe recopy, never a content-hash shortcut. */
 #ifndef CHANGE_INDEX_H
 #define CHANGE_INDEX_H
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+#define INDEX_PATH storage_index_path
+#else
 #define INDEX_PATH BACKUP_ROOT "/.ps5save-index"
+#endif
 #define INDEX_LIMIT 100000
 #define INDEX_BUCKETS 4096
 
@@ -73,6 +77,52 @@ index_clear(void) {
   index_count = 0; index_dirty = 0;
 }
 
+/* After a verified cross-USB copy, rebase cached destination paths and
+ * refresh target filesystem signatures. Original source signatures are
+ * retained so unchanged saves do not need to be copied again. */
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+static void index_rebase_usb(const char *from, const char *to) {
+  change_record_t *items = NULL;
+  for(unsigned bucket = 0; bucket < INDEX_BUCKETS; bucket++) {
+    change_record_t *r = change_index[bucket];
+    change_index[bucket] = NULL;
+    while(r) {
+      change_record_t *next = r->next;
+      r->next = items;
+      items = r;
+      r = next;
+    }
+  }
+  size_t prefix = strlen(from);
+  index_count = 0;
+  for(change_record_t *r = items; r;) {
+    change_record_t *next = r->next;
+    char newpath[PATH_MAX];
+    struct stat st;
+    if(strncmp(r->path, from, prefix) || r->path[prefix] != '/' ||
+       snprintf(newpath, sizeof newpath, "%s%s", to, r->path + prefix) >= (int)sizeof newpath ||
+       lstat(newpath, &st) || !S_ISREG(st.st_mode)) {
+      free(r->path);
+      free(r);
+    } else {
+      char *updated = strdup(newpath);
+      if(!updated) {free(r->path); free(r);}
+      else {
+        free(r->path);
+        r->path = updated;
+        r->target = file_signature(&st);
+        unsigned bucket = index_bucket(r->path);
+        r->next = change_index[bucket];
+        change_index[bucket] = r;
+        index_count++;
+      }
+    }
+    r = next;
+  }
+  index_dirty = 1;
+}
+#endif
+
 static int
 file_current(const char *dst, const struct stat *src) {
   change_record_t *r = index_record(dst, 0);
@@ -110,7 +160,21 @@ index_load(void) {
        fread(&source, 1, sizeof source, f) != sizeof source ||
        fread(&target, 1, sizeof target, f) != sizeof target) {valid = 0; break;}
     path[len] = 0;
-    if(strlen(path) != len || strncmp(path, BACKUP_ROOT "/", strlen(BACKUP_ROOT) + 1)) {valid = 0; break;}
+    if(strlen(path) != len) {valid = 0; break;}
+    /* Old USB backups were moved by rename(), so their contents and source
+     * signatures are still valid. Upgrade only the path prefix inside the
+     * persistent cache to avoid re-copying gigabytes of unchanged saves. */
+    const size_t old_prefix = strlen(LEGACY_BACKUP_ROOT);
+    if(!strncmp(path, LEGACY_BACKUP_ROOT, old_prefix) && path[old_prefix] == '/') {
+      char migrated[PATH_MAX];
+      int length = snprintf(migrated, sizeof migrated, "%s%s",
+                            BACKUP_ROOT, path + old_prefix);
+      if(length < 0 || (size_t)length >= sizeof migrated) {valid = 0; break;}
+      strcpy(path, migrated);
+      index_dirty = 1;  /* Rewrite as the new layout on the next pass. */
+    }
+    size_t new_prefix = strlen(BACKUP_ROOT);
+    if(strncmp(path, BACKUP_ROOT, new_prefix) || path[new_prefix] != '/') {valid = 0; break;}
     change_record_t *r = index_record(path, 1);
     if(!r) {valid = 0; break;}
     r->source = source; r->target = target;
@@ -122,8 +186,16 @@ index_load(void) {
 static void
 index_save(void) {
   if(!index_dirty) return;
-  FILE *f = fopen(INDEX_PATH ".part", "wb");
-  if(!f) {logq("Cannot save change cache; next pass may recopy files"); return;}
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *partial = storage_index_part;
+#else
+  const char *partial = INDEX_PATH ".part";
+#endif
+  FILE *f = fopen(partial, "wb");
+  if(!f) {
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
+    return;
+  }
   int ok = fwrite("PS5IDX2\n", 1, 8, f) == 8;
   for(unsigned i = 0; i < INDEX_BUCKETS && ok; i++) {
     for(change_record_t *r = change_index[i]; r && ok; r = r->next) {
@@ -136,8 +208,9 @@ index_save(void) {
   }
   if(fflush(f) || fsync(fileno(f))) ok = 0;
   if(fclose(f)) ok = 0;
-  if(!ok || rename(INDEX_PATH ".part", INDEX_PATH)) {
-    unlink(INDEX_PATH ".part"); logq("Cannot commit change cache");
+  if(!ok || rename(partial, INDEX_PATH)) {
+    unlink(partial);
+    notify_problem(NOTICE_WARNING, "index-save", NULL, "Could not save the backup index. Files may be copied again.");
   } else index_dirty = 0;
 }
 #endif

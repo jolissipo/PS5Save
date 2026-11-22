@@ -1,106 +1,115 @@
-<img width="128" height="128" alt="PS5Save" src="notification.png" />
+<img src="notification.png" width="128" height="128" alt="PS5Save+ icon" />
 
-# PS5Save - Automatic game save and file backups!
-Easy to use USB save backup utility for jailbroken PS5s that helps you prevent data loss!  
-- Fully automatic with daily snapshots, supports PS5 saves, PS4 saves, emulator saves and other files
-<img width="1280" height="720" alt="PS5Save notification screenshot" src="https://github.com/user-attachments/assets/cbef0c27-b218-4da1-943c-f6c0da6e0ef4" />
+# PS5Save+
 
+**Automatic save backups for jailbroken PS5 consoles — with a dashboard to keep everything under control.**
 
-# Guide
-- Get a fast USB storage device that is big enough to fit all of your saves (formatted as exFAT)
-- Create a `backup.conf` file on the root of your USB
-- Fill `backup.conf` with your personalized values (look at Backup Configuration section)
-- Plug in into your PS5
-- Push the backup.elf payload to your PS5 using a network loader or an autoloader of your choice
+PS5Save+ builds on [PS5Save](https://github.com/heni0xyz/PS5Save). It retains the original project's automatic incremental backups, daily snapshots and game-aware protection, and adds easier management, smarter notifications and support for multiple USB drives.
 
-PS4/PS5 saves will backed up while in-game except for the game you're currently playing it will be backed up after you exit the title *(since version v2)*
+## What it adds
 
-# Backup Configuration
-Example: 
+- **A web dashboard.** Check the latest backup, browse saved files and daily snapshots, view free space and read logs from the PS5 or any browser on the local network.
+- **Less intrusive notifications.** Meaningful progress, completion and error alerts, with console-language support and options to reduce interruptions during games.
+- **Multi-USB management.** Detect existing backups automatically, select a drive and transfer a complete backup to another USB. Transfers are checked byte-for-byte; interrupted transfers can reuse verified files instead of starting from zero.
+- **Settings without editing files.** Change backup options in the dashboard after entering a pairing code shown on the console. Each browser has its own temporary editing session.
+- **Rest-mode recovery.** The dashboard and backup service recover after the console wakes, provided the payload process remains active. Automatic idle standby is inhibited during file copies; explicit rest commands remain possible.
+- **One payload, one shortcut.** The ELF runs the backup service and dashboard and installs a PS5 home-screen shortcut if needed.
+
+Backups cover decrypted PS4/PS5 saves, original encrypted save files, trophies and optional emulator folders. Saves belonging to active games are deferred until they can be copied safely.
+
+## Get started
+
+1. Connect a writable **exFAT USB drive** with enough space for your saves.
+2. Download **[PS5Save+ v0.1.0-alpha](https://github.com/jolissipo/PS5Save/releases/tag/v0.1.0-alpha)** and load the ELF with a compatible PS5 payload loader.
+3. Open the **PS5Save+** shortcut on the console, or visit `http://<PS5-IP>:8755/` from your local network.
+4. To change options, select **Settings → Unlock editing on PS5** and enter the six-digit code shown on the console.
+
+Backups start automatically when the payload launches, then run at the configured interval (30 seconds by default). The dashboard is available while the payload is active.
+
+## Your backups and settings
+
+Everything is stored on the selected USB drive:
+
+```text
+/mnt/usbN/ps5save-plus/
+├── backup.conf             # Configuration
+├── backup/                 # Current backups
+├── backup_daily/           # Daily snapshots
+├── events.log              # Diagnostics
+└── history.tsv             # Backup history
 ```
-# Delay between backup passes in seconds (int, min 30 max 3600)
+
+### Default configuration
+
+PS5Save+ creates `backup.conf` automatically on the selected USB drive if it does not already exist. Common options can be changed through **Settings** in the dashboard, without editing the file directly.
+
+<details>
+<summary>Preview the default backup.conf</summary>
+
+```ini
+# Destination and backup frequency
+backup_usb_device=auto
 backup_interval_seconds=30
 
-# Enable decrypted PS4 save backups (false, true)
+# Console notifications
+backup_notifications=all
+backup_notifications_in_game=false
+
+# Saved data
 backup_ps4_saves=true
-
-# Enable decrypted PS5 save backups (false, true)
 backup_ps5_saves=true
+backup_encrypted_saves=true
+backup_ps4_trophies=true
+backup_ps5_trophies=true
 
-# Copy original encrypted PS4 and PS5 saves, including PS4 companion keys
-backup_encrypted_saves=false
-
-# Copy PS4 and PS5 trophy progress and catalogs to USB
-backup_ps4_trophies=false
-backup_ps5_trophies=false
-
-# Maximum combined save-image size per title in MB (int)
+# Size limit and daily snapshots
 max_title_size_mb=4096
+daily_snapshots_to_keep=3
 
-# Number of dated snapshots retained, values 0 thru 10 are valid; 0 means disabled (int)
-daily_snapshots_to_keep=2
-
-# File backup section with most popular emulators listed
-
-# PS5SX2
-/data/PCSX2/Mcd001.ps2
-/data/PCSX2/Mcd002.ps2
-
-# PS5SX3
-/data/homebrew/PPSA99303/rpcs3/dev_hdd0/home/
-
-# Porpoise
-/data/porpoise/saves/
-
-# ProsperoEden
-/data/prosperoeden/user/nand
-
-# PS5X360
-/data/homebrew/PPSA50011/saves
+# Optional emulator paths (remove # to enable)
+#/data/PCSX2/Mcd001.ps2
+#/data/PCSX2/Mcd002.ps2
 ```
 
-Encrypted saves and trophies default to off. Each setting works independently of decrypted save backups.
+</details>
 
-- Encrypted PS4 and PS5 saves keep their original filenames and directory structure under `/backup/user/home/<USER_ID>/savedata/` and `/backup/user/home/<USER_ID>/savedata_prospero/` on the USB. These copies include PS4 `.bin` companion files. The decrypted per-title size limit does not apply to these copies.
-- Trophy backups copy the per-user `trophy` and `trophy2` directories and the shared catalogs under `/user/trophy` and `/user/trophy2` when present. The USB copies preserve those paths under `/backup`.
-- These options copy files individually on regular backup passes. For a consistent copy of a game's save and trophy files, close the game before running a pass.
+The complete file, including examples for other emulators, is available in [`backup.conf`](backup.conf). The key settings are:
 
-## Credits
-- n0llptr — [Playstation 5 Save Mounter](https://github.com/n0llptr/Playstation-5-Save-Mounter)
-- earthonion — loading game titles code and save creation: [Garlic SaveMgr](https://git.etawen.dev/earthonion/garlic-savemgr)
-- cow — save mounting research using internal PS5 `sceFs*` functions
+- **USB drive:** `auto` prefers an existing backup installation. Alternatively, specify a mounted drive such as `/mnt/usb1`; changing drives starts a verified transfer.
+- **Check interval:** `backup_interval_seconds` accepts **30–3600 seconds**. The first check runs when the payload starts.
+- **Notifications:** choose `all`, `errors` or `off`. Set `backup_notifications_in_game=true` to allow routine notifications during gameplay.
+- **What to back up:** each PS4/PS5 saves, encrypted saves and trophies option accepts `true` or `false`.
+- **Snapshots and file size:** `daily_snapshots_to_keep` accepts **0–10** (0 disables snapshots). `max_title_size_mb` is the per-title save-image limit in decimal MB.
+- **Custom emulator files:** add one absolute path per line, without a setting name. Lines beginning with `#` are ignored; remove it to enable a listed path.
 
-## Building
+### Advanced editing
 
-Requires Linux (for example Ubuntu 24.04) and the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk).
+**Settings → Advanced: edit backup.conf directly** opens the complete configuration file. This is intended mainly for custom emulator paths or settings not exposed in the standard controls.
 
-Install the build tools
+**Be careful:** **Save entire configuration** saves the whole edited file, not just one option. Preserve the existing settings and custom paths, use the correct `key=value` format for named options, and check paths before saving. Invalid settings or paths are rejected; after a successful save, the previous configuration is kept as `backup.conf.bak`. For ordinary changes, use the standard dashboard controls instead.
+
+A transfer to another USB drive preserves the original data until the destination has been verified. If the transfer stops, the next attempt checks the temporary files before reusing or replacing them. An existing backup installation on the destination is never overwritten.
+
+## Important notes
+
+- **Compatibility:** tested on PS5 firmware **11.60**, including recovery after rest mode. Other firmware versions have not been verified here.
+- **Power:** HDMI-CEC or a manual command can still put the console into rest mode. After a full reboot, the ELF must be launched again unless your loader handles autoload.
+- **Access:** the dashboard uses HTTP on port **8755**. Keep it on a trusted local network; do not expose it to the internet.
+- **Restore:** the dashboard lets you browse backups but does not restore saves. File verification during USB transfer compares the two copies; it does not prove that an original save is valid.
+
+## Build
+
+Requires the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk).
 
 ```sh
-sudo apt update
-sudo apt install make clang-18 lld-18 llvm-18 wget unzip
+make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+sh tests/run-host-tests.sh
 ```
 
-Download and extract the SDK
+GitHub Actions runs the host tests, compiles the PS5 ELF and publishes validated releases.
 
-```sh
-wget https://github.com/ps5-payload-dev/sdk/releases/download/v0.45/ps5-payload-sdk.zip
-unzip ps5-payload-sdk.zip
-export PS5_PAYLOAD_SDK="$(pwd)/ps5-payload-sdk"
-export LLVM_CONFIG=llvm-config-18
-```
+## Credits and licence
 
-Open the PS5Save source directory, then run:
+Based on **[PS5Save by heni0xyz](https://github.com/heni0xyz/PS5Save)** and its upstream contributors. Rest-mode HTTP recovery follows techniques used by [PLDMGR](https://github.com/itsPLK/ps5-payload-manager) and [PKG Manager](https://github.com/itsPLK/ps5-pkg-manager); idle-timer maintenance follows the approach in [KeepAwake](https://github.com/mortyzip/KeepAwake).
 
-```sh
-make
-```
-
-The compiled payload is `backup.elf`.
-
-To rebuild after changing the source:
-
-```sh
-make clean
-make
-```
+Licensed under [GPL-3.0](LICENSE).

@@ -1,0 +1,148 @@
+name: PS5Save+ validation
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.sh'
+      - 'dashboard/**'
+      - 'Makefile'
+      - '.github/workflows/host-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run host tests
+        run: sh tests/run-host-tests.sh
+      - name: Check dashboard JavaScript syntax and launcher metadata
+        run: |
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          import pathlib, json
+          class ScriptParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.in_script = False
+                  self.scripts = []
+                  self.ids = []
+              def handle_starttag(self, name, attrs):
+                  if name == "script": self.in_script = True
+                  self.ids += [value for key, value in attrs if key == "id"]
+              def handle_endtag(self, name):
+                  if name == "script": self.in_script = False
+              def handle_data(self, data):
+                  if self.in_script: self.scripts.append(data)
+          p = ScriptParser()
+          p.feed(pathlib.Path("dashboard/index.html").read_text(encoding="utf-8"))
+          assert len(p.scripts) == 1, "Dashboard must contain one inline script"
+          assert len(p.ids) == len(set(p.ids)), "HTML element IDs must be unique"
+          for element_id in ("liveItems", "liveTrail", "liveSummary", "liveMore",
+                             "snapshotItems", "snapshotTrail", "snapshotSummary",
+                             "snapshotMore", "snapshotPicker"):
+              assert element_id in p.ids, f"Missing independent explorer component: {element_id}"
+          assert "explorers={" in p.scripts[0], "Backup trees must have independent navigation state"
+          pathlib.Path("/tmp/ps5save-dashboard.js").write_text(p.scripts[0], encoding="utf-8")
+          j = json.loads(pathlib.Path("launcher/param.json").read_text(encoding="utf-8"))
+          assert j["titleId"] == "PSSV00001"
+          assert j["deeplinkUri"] == "http://127.0.0.1:8755/"
+          assert set(j) == {"titleId", "applicationCategoryType", "deeplinkUri", "localizedParameters"}, "Launcher must use proven minimal metadata"
+          assert j["applicationCategoryType"] == 65536
+          import re
+          assert re.fullmatch(r"[A-Z]{4}[0-9]{5}", j["titleId"]), "PS5 app IDs must be four capital letters and five digits"
+          installer = pathlib.Path("launcher_installer.c").read_text(encoding="utf-8")
+          assert '#define LAUNCHER_ID "' + j["titleId"] + '"' in installer, "Installer title ID does not match param.json"
+          assert j["localizedParameters"]["en-US"]["titleName"] == "PS5Save+"
+          main = pathlib.Path("main.c").read_text(encoding="utf-8")
+          version = pathlib.Path("VERSION").read_text().strip()
+          assert '#include "launcher_installer.c"' in main
+          assert 'SYS_thr_set_name, -1, "ps5saveplus.elf"' in main
+          assert f'#define PS5SAVE_RELEASE "v{version}"' in main
+          assert re.fullmatch(r"0\.[0-9]+\.[0-9]+-alpha(?:\.[0-9]+)?", version)
+          PY
+          node --check /tmp/ps5save-dashboard.js
+          node tests/dashboard-config.js
+
+  ps5-sdk-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PS5 SDK toolchain prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang lld unzip
+      - name: Download official PS5 Payload SDK v0.50
+        run: |
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "$RUNNER_TEMP/sdk.zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/v0.50/ps5-payload-sdk.zip"
+          unzip -q "$RUNNER_TEMP/sdk.zip" -d "$RUNNER_TEMP/sdk"
+          test -f "$RUNNER_TEMP/sdk/ps5-payload-sdk/toolchain/prospero.mk"
+      - name: Cross-compile PS5Save+ ELF
+        run: |
+          make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
+          VERSION="$(head -n 1 VERSION)"
+          cp ps5saveplus.elf "ps5saveplus_v${VERSION}.elf"
+          test -s ps5saveplus.elf
+          test -s "ps5saveplus_v${VERSION}.elf"
+          file ps5saveplus.elf
+          readelf -h ps5saveplus.elf | head -n 28
+          echo 'Runtime dependencies:'
+          readelf -d ps5saveplus.elf | grep NEEDED || true
+          sha256sum "ps5saveplus_v${VERSION}.elf"
+      - name: Upload development ELF for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps5saveplus-alpha-candidate
+          path: ps5saveplus_v*.elf
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-alpha:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [host-tests, ps5-sdk-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: ps5saveplus-alpha-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download validated PS5Save+ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ps5saveplus-alpha-candidate
+      - name: Publish versioned alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(head -n 1 VERSION)"
+          TAG="v${VERSION}"
+          ELF="ps5saveplus_v${VERSION}.elf"
+          test -s "$ELF"
+          test -s ".github/releases/${TAG}.md"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Alpha release $TAG already exists; refusing to replace its binary."
+            exit 0
+          fi
+          gh release create "$TAG" "$ELF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "PS5Save+ $TAG" \
+            --notes-file ".github/releases/${TAG}.md" \
+            --prerelease

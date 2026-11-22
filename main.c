@@ -17,12 +17,14 @@ along with this program; see the file COPYING. If not, see
 /**
  * Save backup daemon for PS5.
  *
- * Reads /mnt/usb0/backup.conf and copies the listed files to
- * /mnt/usb0/backup/<original path>:
+ * Reads /mnt/usb0/ps5save-plus/backup.conf (creating it if missing) and
+ * copies the listed files to /mnt/usb0/ps5save-plus/backup/<original path>:
  *
  *   /data/PCSX2/Mcd001.ps2        one file
  *   /data/porpoise/saves/<star>   every file and folder below, recursively
  *   backup_interval_seconds=60      seconds between backups (default 60)
+ *   backup_notifications=all       all, errors or off (default all)
+ *   backup_notifications_in_game=false  suppress toasts during possible game activity
  *   backup_ps4_saves=true           enable decrypted PS4 saves (default false)
  *   backup_ps5_saves=true           enable decrypted PS5 saves (default false)
  *   backup_encrypted_saves=true     copy original PS4 and PS5 save files
@@ -32,7 +34,7 @@ along with this program; see the file COPYING. If not, see
  *                                  in decimal MB; default 4096 = 4.096GB
  *   daily_snapshots_to_keep=3       keep a dated snapshot (a copy of the live
  *                                 backup) of the newest N days in
- *                                 /mnt/usb0/backup_daily/YYYY-MM-DD, using the
+ *                                 /mnt/usb0/ps5save-plus/backup_daily/YYYY-MM-DD, using the
  *                                 console's local date. 0..10, default 0 = off.
  *                                 The first run on a date creates its snapshot
  *                                 and it is never overwritten that day; it is
@@ -48,7 +50,7 @@ along with this program; see the file COPYING. If not, see
  *
  * PS4/PS5 saves are encrypted images. For each image that changed, a COPY of
  * the image is mounted (the original is only ever read), the decrypted files
- * are copied to /mnt/usb0/backup/saves/..., and the image is unmounted again.
+ * are copied to /mnt/usb0/ps5save-plus/backup/saves/..., and the image is unmounted again.
  * A title is deferred while that same title is running, suspended or still
  * sandbox-mounted. Other titles may be backed up during gameplay. Activity is
  * checked before mounting and during copying; unknown activity fails closed.
@@ -64,12 +66,14 @@ along with this program; see the file COPYING. If not, see
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -78,6 +82,7 @@ along with this program; see the file COPYING. If not, see
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -91,6 +96,7 @@ along with this program; see the file COPYING. If not, see
 #include <sys/proc.h>
 #include <sys/user.h>
 #include <sys/sysctl.h>
+#include <sys/syscall.h>
 #else
 #include <sys/statfs.h>
 #endif
@@ -99,8 +105,50 @@ along with this program; see the file COPYING. If not, see
 #include <ps5/klog.h>
 
 
+/* PS5 exposes up to eight external USB mount points. On the console the
+ * selected paths are mutable and change ONLY between backup passes. Host
+ * fixtures retain compile-time literal paths to exercise the backup engine. */
+#ifndef BACKUP_HOST_TEST
+#define PS5SAVE_DYNAMIC_STORAGE 1
+static char storage_usb_path[PATH_MAX] = "/mnt/usb0";
+static char storage_root_path[PATH_MAX] = "/mnt/usb0/ps5save-plus";
+static char storage_conf_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf";
+static char storage_backup_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup";
+static char storage_daily_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup_daily";
+static char storage_legacy_conf[PATH_MAX] = "/mnt/usb0/backup.conf";
+static char storage_legacy_bak[PATH_MAX] = "/mnt/usb0/backup.conf.bak";
+static char storage_legacy_backup[PATH_MAX] = "/mnt/usb0/backup";
+static char storage_legacy_daily[PATH_MAX] = "/mnt/usb0/backup_daily";
+static char storage_conf_bak[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.bak";
+static char storage_conf_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.part";
+static char storage_log_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log";
+static char storage_log_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log.1";
+static char storage_history_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv";
+static char storage_history_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv.1";
+static char storage_index_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index";
+static char storage_index_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index.part";
+static char storage_installer_log[PATH_MAX] = "/mnt/usb0/ps5save-plus/launcher-installer.log";
+#define USB_ROOT storage_usb_path
+#define STORAGE_ROOT storage_root_path
+#define CONF_PATH storage_conf_path
+#define BACKUP_ROOT storage_backup_path
+#define DAILY_ROOT storage_daily_path
+#define LEGACY_CONF_PATH storage_legacy_conf
+#define LEGACY_CONF_BAK storage_legacy_bak
+#define LEGACY_BACKUP_ROOT storage_legacy_backup
+#define LEGACY_DAILY_ROOT storage_legacy_daily
+#else
 #ifndef USB_ROOT
 #define USB_ROOT      "/mnt/usb0"
+#endif
+#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
+#define CONF_PATH     STORAGE_ROOT "/backup.conf"
+#define BACKUP_ROOT   STORAGE_ROOT "/backup"
+#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
+#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
+#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
+#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
+#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #endif
 #ifndef HOME_ROOT
 #define HOME_ROOT     "/user/home"
@@ -115,9 +163,6 @@ along with this program; see the file COPYING. If not, see
 #define PFSMGR_DEV    "/dev/pfsmgr"
 #endif
 
-#define CONF_PATH     USB_ROOT "/backup.conf"
-#define BACKUP_ROOT   USB_ROOT "/backup"
-#define DAILY_ROOT    USB_ROOT "/backup_daily"
 #define MAX_DAILY     10      /* highest value for daily_snapshots_to_keep= */
 #define MAX_DAILY_DIRS 1024   /* date folders looked at when pruning */
 #define TMP_IMG       TMP_DIR "/_backup_tmp_image"
@@ -145,7 +190,6 @@ along with this program; see the file COPYING. If not, see
 #define LOCK_PORT     9055    /* loopback port used to detect/replace a running instance */
 #endif
 #define MISSING_TRIES 6       /* conf missing this many slices in a row -> notify */
-#define MAX_SEEN      256
 
 #ifndef GAME_CHECK_SEC
 #define GAME_CHECK_SEC 1.0    /* how often the game check is repeated while mounted */
@@ -165,8 +209,8 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v3"
-#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-" PS5SAVE_RELEASE ".png"
+#define PS5SAVE_RELEASE "v0.1.0-alpha"
+#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
 
@@ -250,6 +294,7 @@ typedef struct backup_stats {
   unsigned copied;
   unsigned unchanged;
   unsigned skipped;
+  unsigned empty_sources;
   unsigned failed;
 } backup_stats_t;
 
@@ -264,9 +309,6 @@ typedef enum { SV_OK, SV_SKIP, SV_FAILED, SV_GAME } sv_result_t;
 
 static char *g_buf;
 static long g_interval = DEF_INTERVAL;
-static int g_last_failed = 0;
-static char *g_seen[MAX_SEEN];
-static int g_nseen = 0;
 
 static uint64_t g_max_game = DEF_GAME_MB * BYTES_PER_MB;
 static uint64_t g_file_cap = MAX_FILE_SZ;   /* per-file limit, 0 = none */
@@ -281,12 +323,38 @@ static int g_mount_stuck = 0;
 static int g_watch_game = 0;      /* protect the currently mounted title */
 static int g_game_abort = 0;      /* abort this save image only */
 static int g_backup_busy = 0;     /* one activity warning per copying pass */
-static int g_start_notified = 0;  /* one startup notification per process */
+static int g_last_cycle_unchanged; /* true only for a complete no-change pass */
 static double g_last_watch = 0;
 static char g_abort_why[192];
 
 
 static void logq(const char *fmt, ...);
+static int notification_game_muted(void);
+
+typedef enum { NOTICES_ALL, NOTICES_ERRORS, NOTICES_OFF } notice_mode_t;
+typedef enum { NOTICE_INFO, NOTICE_WARNING, NOTICE_ERROR } notice_level_t;
+typedef struct {
+  notice_mode_t mode;
+  int in_game;
+} notification_settings_t;
+
+#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 0}
+static const notification_settings_t notification_defaults = DEFAULT_NOTIFICATION_SETTINGS;
+static notification_settings_t notification_settings = DEFAULT_NOTIFICATION_SETTINGS;
+
+/* Settings are published between passes with the worker joined. The sender
+ * mutex serializes rich toasts, icon installation and issue history updates. */
+static pthread_mutex_t notification_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define MAX_NOTIFICATION_ISSUES 256
+static struct {
+  const char *problem;
+  char *subject;
+  int observed;
+  notice_level_t level;
+} notification_issues[MAX_NOTIFICATION_ISSUES];
+static size_t next_notification_issue;
+static int notification_cycle_failed;
+static int notification_recovered;
 
 /* Escape every JSON control character and reject overflow rather than emit
  * truncated or malformed JSON. UTF-8 bytes are preserved. */
@@ -325,9 +393,12 @@ notification_json_escape(char *dst, size_t size, const char *src) {
 /* Standard informative notification: status message, PS5Save label and image.
  * Use a plain local image path, as in the SMP rich notification transport.
  * No interactive actions, alternate views or legacy debug popups. */
+#include "ps5save_i18n.h"
+
 static int
 build_notification_payload(const char *message, const char *created_at,
-                           const char *id, char *payload, size_t size) {
+                           const char *id, const char *bundle_name,
+                           const char *overwrite_type, char *payload, size_t size) {
   size_t capacity = strlen(message) * 6 + 1;
   if(capacity > 2048 * 6 + 1) return 0;
   char *escaped = malloc(capacity);
@@ -340,95 +411,263 @@ build_notification_payload(const char *message, const char *created_at,
     "{\"rawData\":{"
       "\"viewTemplateType\":\"ToastTemplateB\","
       "\"channelType\":\"SystemFeedback\","
-      "\"bundleName\":\"PS5Save\",\"useCaseId\":\"IDC\","
-      "\"soundEffect\":\"none\",\"toastOverwriteType\":\"No\","
+      "\"bundleName\":\"%s\",\"useCaseId\":\"IDC\","
+      "\"soundEffect\":\"none\",\"toastOverwriteType\":\"%s\","
       "\"isImmediate\":true,\"priority\":100,"
       "\"viewData\":{"
         "\"icon\":{\"type\":\"Url\",\"parameters\":{"
           "\"url\":\"" NOTIFICATION_ICON_PATH "\"}},"
         "\"message\":{\"body\":\"%s\"},"
-        "\"subMessage\":{\"body\":\"PS5Save | Version %s\"}}},"
+        "\"subMessage\":{\"body\":\"PS5Save+ | %s\"}}},"
       "\"createdDateTime\":\"%s\",\"localNotificationId\":\"%s\"}",
-    escaped, PS5SAVE_VERSION, created_at, id);
+    bundle_name, overwrite_type, escaped, PS5SAVE_VERSION, created_at, id);
   free(escaped);
   return n >= 0 && (size_t)n < size;
 }
 
-/** Send every user-facing message through libSceNotification, with our icon. */
-static void
-notify_v(const char *fmt, va_list ap) {
+/** Send an eligible message through libSceNotification, with our icon. */
+static int
+send_notification_with_policy(const char *message, const char *bundle_name,
+                              const char *overwrite_type) {
   static unsigned serial;
-  char message[2048];
   char *payload;
   char created_at[32];
   char id[96];
   struct timespec ts;
   struct tm utc;
 
-  vsnprintf(message, sizeof message, fmt, ap);
-  logq("%s", message);
-
   if(!prepare_notification_icon()) {
     logq("Rich notification not sent: icon installation failed (%s)",
          strerror(errno));
-    return;
+    return 0;
   }
   if(clock_gettime(CLOCK_REALTIME, &ts) ||
      !gmtime_r(&ts.tv_sec, &utc) ||
      !strftime(created_at, sizeof created_at, "%Y-%m-%dT%H:%M:%S.000Z", &utc)) {
     logq("Rich notification not sent: cannot obtain timestamp");
-    return;
+    return 0;
   }
   snprintf(id, sizeof id, "ps5save-%lld-%ld-%d-%u",
            (long long)ts.tv_sec, ts.tv_nsec, (int)getpid(), ++serial);
   payload = malloc(NOTIFICATION_JSON_SIZE);
   if(!payload) {
     logq("Rich notification not sent: not enough memory");
-    return;
+    return 0;
   }
-  if(!build_notification_payload(message, created_at, id,
-                                 payload, NOTIFICATION_JSON_SIZE)) {
+  char localized[2048];
+  const char *display_text = ps5_localize_notification(message, localized, sizeof localized);
+  if(!build_notification_payload(display_text, created_at, id, bundle_name,
+                                 overwrite_type, payload, NOTIFICATION_JSON_SIZE)) {
     free(payload);
     logq("Rich notification not sent: payload too large");
-    return;
+    return 0;
   }
   int rc = sceNotificationSend(NOTIFICATION_USER_ID, true, payload);
   free(payload);
   if(rc != 0) {
     logq("sceNotificationSend failed (0x%08x)", (unsigned)rc);
   }
+  return rc == 0;
 }
 
+/* Ordinary independent toasts never replace warnings or errors. */
+static int
+send_notification(const char *message) {
+  return send_notification_with_policy(message, "PS5Save+", "No");
+}
 
-/* Serialize the timer and main thread, including icon setup and notification IDs. */
+static int
+notification_allowed(notice_level_t level) {
+  return notification_settings.mode == NOTICES_ALL ||
+         (notification_settings.mode == NOTICES_ERRORS && level != NOTICE_INFO);
+}
+
+static int
+notification_emit_locked(notice_level_t level, const char *message) {
+  if(!notification_allowed(level)) return 0;
+  return (notification_settings.in_game || !notification_game_muted()) &&
+         send_notification(message);
+}
+
 static void
-notify(const char *fmt, ...) {
-  static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+notify_info(const char *fmt, ...) {
+  char message[2048];
   va_list ap;
-  pthread_mutex_lock(&mutex);
   va_start(ap, fmt);
-  notify_v(fmt, ap);
+  vsnprintf(message, sizeof message, fmt, ap);
   va_end(ap);
-  pthread_mutex_unlock(&mutex);
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  notification_emit_locked(NOTICE_INFO, message);
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+/* The problem identifier is a string literal. The subject is copied only
+ * after a successful send; muted or failed sends never become pending toasts. */
+static void
+notify_problem(notice_level_t level, const char *problem, const char *subject,
+               const char *fmt, ...) {
+  char message[2048];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(message, sizeof message, fmt, ap);
+  va_end(ap);
+  logq("%s: %s%s%s", level == NOTICE_ERROR ? "ERROR" : "WARNING",
+       message, subject && subject[0] ? " " : "", subject ? subject : "");
+
+  if(!subject) subject = "";
+  pthread_mutex_lock(&notification_mutex);
+  if(level == NOTICE_ERROR) notification_cycle_failed = 1;
+  size_t free_slot = MAX_NOTIFICATION_ISSUES;
+  for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++) {
+    if(!notification_issues[i].problem) {
+      if(free_slot == MAX_NOTIFICATION_ISSUES) free_slot = i;
+    } else if(!strcmp(notification_issues[i].problem, problem) &&
+              !strcmp(notification_issues[i].subject, subject)) {
+      notification_issues[i].observed = 1;
+      /* An existing warning must not conceal a later escalation to error. */
+      if(level > notification_issues[i].level &&
+         notification_emit_locked(level, message))
+        notification_issues[i].level = level;
+      goto done;
+    }
+  }
+
+  if(!notification_emit_locked(level, message)) goto done;
+  char *saved_subject = strdup(subject);
+  if(!saved_subject) goto done;
+  if(free_slot == MAX_NOTIFICATION_ISSUES) {
+    free_slot = next_notification_issue;
+    next_notification_issue = (next_notification_issue + 1) % MAX_NOTIFICATION_ISSUES;
+    free(notification_issues[free_slot].subject);
+  }
+  notification_issues[free_slot].problem = problem;
+  notification_issues[free_slot].subject = saved_subject;
+  notification_issues[free_slot].observed = 1;
+  notification_issues[free_slot].level = level;
+done:
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notification_issues_begin(int pending_only) {
+  pthread_mutex_lock(&notification_mutex);
+  notification_cycle_failed = 0;
+  notification_recovered = 0;
+  if(!pending_only) {
+    for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++)
+      notification_issues[i].observed = 0;
+  }
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notification_issues_end(void) {
+  pthread_mutex_lock(&notification_mutex);
+  int resolved_error = 0;
+  int still_has_issues = 0;
+  for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++) {
+    if(!notification_issues[i].problem) continue;
+    if(!notification_issues[i].observed) {
+      if(notification_issues[i].level == NOTICE_ERROR)
+        resolved_error = 1;
+      free(notification_issues[i].subject);
+      notification_issues[i].subject = NULL;
+      notification_issues[i].problem = NULL;
+    } else {
+      still_has_issues = 1;
+    }
+  }
+  /* Only claim full recovery when all previously reported problems cleared. */
+  notification_recovered = resolved_error && !still_has_issues &&
+                           !notification_cycle_failed;
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+/* A completed backup is a terminal status, never another throttled progress
+ * update. Both share an isolated ShellUI bundle so "Always" can replace a
+ * visible/queued percentage without touching independent warnings/errors.
+ * This emits immediately after the last copy; no 10-second timer is used.
+ */
+static void
+notify_backup_status(int complete, const char *fmt, ...) {
+  char message[2048];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(message, sizeof message, fmt, ap);
+  va_end(ap);
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(
+        message, "PS5Save+ Backup", complete ? "Always" : "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
+
+static void
+notify_progress(unsigned percent) {
+  notify_backup_status(0, "Backup progress: %u%%", percent);
 }
 
 #include "backup_progress.h"
 
+#ifndef BACKUP_HOST_TEST
+static atomic_int backup_copy_active;
+#endif
 
-/* Announce actual copy work once per pass, including save-image staging
- * and daily snapshot copies. Unchanged/scanning-only passes stay quiet. */
+/* Announce the first copy operation, including a snapshot-only pass. */
 static void
-backup_activity_begin(void) {
+backup_activity_begin(const char *message) {
   if(!g_backup_busy) {
     g_backup_busy = 1;
-    notify("Backing up, don't unplug the USB");
-    progress_start();
+#ifndef BACKUP_HOST_TEST
+    atomic_store(&backup_copy_active, 1);
+#endif
+    (void)message; /* Normal start is intentionally silent. */
+    if(notification_allowed(NOTICE_INFO))
+      progress_start(notify_progress);
   }
 }
 
 
+#ifndef BACKUP_HOST_TEST
+/* Best-effort bounded USB log. Never report a logging error through logq. */
+static pthread_mutex_t file_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void persist_log_line(const char *message) {
+  pthread_mutex_lock(&file_log_mutex);
+  const char *dir = STORAGE_ROOT;
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *path = storage_log_path;
+  const char *old = storage_log_rotated;
+#else
+  const char *path = USB_ROOT "/ps5save-plus/events.log";
+  const char *old = USB_ROOT "/ps5save-plus/events.log.1";
+#endif
+  if(!access(CONF_PATH, R_OK) && !mkdir_p(dir)) {
+    struct stat st;
+    if(!stat(path, &st) && st.st_size >= 256 * 1024) {
+      unlink(old);
+      rename(path, old);
+    }
+    FILE *f = fopen(path, "a");
+    if(f) {
+      time_t now = time(NULL);
+      struct tm utc;
+      char date[32] = "";
+      if(gmtime_r(&now, &utc))
+        strftime(date, sizeof date, "%Y-%m-%dT%H:%M:%SZ", &utc);
+      fprintf(f, "%s %s\n", date, message);
+      fclose(f);
+    }
+  }
+  pthread_mutex_unlock(&file_log_mutex);
+}
+#endif
+
 /**
- * Quiet log: stdout and klog only, no on-screen notification.
+ * Quiet log: stdout, kernel log, and bounded persistent USB log.
  **/
 static void
 logq(const char *fmt, ...) {
@@ -442,24 +681,9 @@ logq(const char *fmt, ...) {
   printf("%s\n", msg);
   fflush(stdout);
   klog_printf("[backup] %s\n", msg);
-}
-
-
-/**
- * Returns non-zero if the path was reported before; remembers it otherwise.
- * Used so that a permanently oversized file is not announced every cycle.
- **/
-static int
-seen_before(const char *path) {
-  for(int i = 0; i < g_nseen; i++) {
-    if(!strcmp(g_seen[i], path)) {
-      return 1;
-    }
-  }
-  if(g_nseen < MAX_SEEN) {
-    g_seen[g_nseen++] = strdup(path);
-  }
-  return 0;
+#ifndef BACKUP_HOST_TEST
+  persist_log_line(msg);
+#endif
 }
 
 
@@ -544,6 +768,178 @@ mkdir_p(const char *path) {
   return 0;
 }
 
+#ifndef BACKUP_HOST_TEST
+#include "usb_storage.h"
+
+/* Activity-aware idle timer guard; explicit HDMI-CEC standby is not blocked. */
+/* Avoid only automatic idle standby while files are being copied. An
+ * explicit rest request (including HDMI-CEC) may still suspend the console.
+ * The staged migration recovery path handles that separately. */
+int sceSystemServicePowerTick(void);
+static void *backup_power_worker(void *arg) {
+  (void)arg;
+  for(;;) {
+    if(atomic_load(&backup_copy_active) || atomic_load(&storage_migrating))
+      (void)sceSystemServicePowerTick();
+    sleep(5);
+  }
+  return NULL;
+}
+static void backup_power_guard_start(void) {
+  pthread_t thread;
+  int rc = pthread_create(&thread, NULL, backup_power_worker, NULL);
+  if(!rc) pthread_detach(thread);
+  else logq("Power guard thread unavailable: %s", strerror(rc));
+}
+#endif
+
+/* Embed the same default configuration published in the repository: there
+ * is only one source of defaults for the distributed ELF and the example.
+ * Never overwrite an existing configuration.
+ */
+__asm__(".section .rodata\n"
+        ".global ps5save_default_config\n"
+        ".global ps5save_default_config_end\n"
+        ".global ps5save_default_config_size\n"
+        ".align 16\n"
+        "ps5save_default_config:\n"
+        ".incbin \"backup.conf\"\n"
+        "ps5save_default_config_end:\n"
+        "ps5save_default_config_size:\n"
+        ".quad ps5save_default_config_end - ps5save_default_config\n"
+        ".previous");
+extern const unsigned char ps5save_default_config[];
+extern const size_t ps5save_default_config_size;
+
+/* Only configuration creation emits Debug notifications. All normal backup
+ * results continue to use the existing rich Sony toast API. */
+typedef struct {
+  char padding[45];
+  char message[3075];
+} storage_debug_request_t;
+int sceKernelSendNotificationRequest(int, void *, size_t, int);
+static void storage_debug(const char *message) {
+  storage_debug_request_t request = {0};
+  snprintf(request.message, sizeof request.message, "%s", message);
+  sceKernelSendNotificationRequest(0, &request, sizeof request, 0);
+}
+
+static int storage_write_exact(int fd, const unsigned char *data, size_t len) {
+  size_t used = 0;
+  while(used < len) {
+    ssize_t n = write(fd, data + used, len - used);
+    if(n < 0 && errno == EINTR) continue;
+    if(n <= 0) return -1;
+    used += (size_t)n;
+  }
+  return 0;
+}
+
+/* Only a missing config is generated. A previous custom configuration is
+ * migrated as-is, before the default file is considered.
+ */
+static int storage_default_config(void) {
+  struct stat st;
+  if(!lstat(CONF_PATH, &st)) {
+    if(!S_ISREG(st.st_mode)) {
+      logq("Configuration path exists but is not a regular file: %s", CONF_PATH);
+      return -1;
+    }
+    return 0;
+  }
+  if(errno != ENOENT) return -1;
+
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *temp = storage_conf_part;
+#else
+  const char *temp = CONF_PATH ".part";
+#endif
+  int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if(fd < 0 && errno == EEXIST) {
+    /* Incomplete file from an interrupted earlier attempt. No real config
+     * is ever removed or overwritten. */
+    if(unlink(temp)) return -1;
+    fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  }
+  if(fd < 0) return -1;
+  int good = !storage_write_exact(fd, ps5save_default_config,
+                                  ps5save_default_config_size) &&
+             !fsync(fd);
+  if(close(fd)) good = 0;
+  if(good && !lstat(CONF_PATH, &st)) good = 0;
+  if(good && rename(temp, CONF_PATH)) good = 0;
+  if(!good) {
+    unlink(temp);
+    logq("Could not safely create %s: %s", CONF_PATH, strerror(errno));
+    return -1;
+  }
+  logq("Created default configuration: %s", CONF_PATH);
+  storage_debug("PS5Save+: default backup.conf created in ps5save-plus.");
+  return 1;
+}
+
+static int storage_move_legacy(const char *legacy, const char *destination,
+                               int expect_dir) {
+  struct stat old_st, new_st;
+  if(lstat(legacy, &old_st)) return errno == ENOENT ? 0 : -1;
+  if((expect_dir && !S_ISDIR(old_st.st_mode)) ||
+     (!expect_dir && !S_ISREG(old_st.st_mode))) {
+    logq("Legacy storage path is not the expected type: %s", legacy);
+    return -1;
+  }
+  if(!lstat(destination, &new_st)) {
+    /* A conflicting backup directory must never be erased or merged
+     * automatically. Stop the migration and preserve both trees. */
+    if(expect_dir) {
+      logq("Storage migration conflict; both directories exist: %s and %s",
+           legacy, destination);
+      return -1;
+    }
+    /* Both configs exist: the new one takes precedence, the legacy original
+     * is left untouched for manual recovery. */
+    logq("Retaining pre-existing legacy config; new config takes precedence.");
+    return 0;
+  }
+  if(errno != ENOENT || rename(legacy, destination)) {
+    logq("Could not move legacy storage %s to %s: %s",
+         legacy, destination, strerror(errno));
+    return -1;
+  }
+  logq("Migrated legacy storage %s to %s", legacy, destination);
+  return 1;
+}
+
+/* Called before the web server and before the first backup pass. Migrates
+ * all three old paths on the same USB filesystem through rename(), avoiding
+ * gigabytes of recopy or destructive deletion.
+ *
+ * Migration is restartable after interruption. A conflict halts startup,
+ * instead of silently switching to a fresh, empty set of backups.
+ */
+static int storage_prepare(void) {
+  struct stat st;
+  if(lstat(USB_ROOT, &st) || !S_ISDIR(st.st_mode)) {
+    logq("USB storage is unavailable: %s", USB_ROOT);
+    return -1;
+  }
+  if(mkdir_p(STORAGE_ROOT)) {
+    logq("Could not create PS5Save+ directory: %s", STORAGE_ROOT);
+    return -1;
+  }
+  if(lstat(STORAGE_ROOT, &st) || !S_ISDIR(st.st_mode)) return -1;
+
+  if(storage_move_legacy(LEGACY_BACKUP_ROOT, BACKUP_ROOT, 1) < 0 ||
+     storage_move_legacy(LEGACY_DAILY_ROOT, DAILY_ROOT, 1) < 0 ||
+     storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0 ||
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+     storage_move_legacy(LEGACY_CONF_BAK, storage_conf_bak, 0) < 0)
+#else
+     storage_move_legacy(LEGACY_CONF_BAK, CONF_PATH ".bak", 0) < 0)
+#endif
+    return -1;
+  return storage_default_config() < 0 ? -1 : 0;
+}
+
 
 /**
  * Free space (bytes) on the file system holding path.
@@ -570,6 +966,8 @@ fs_free(const char *path, const char *test_env) {
 
 #define usb_free()   fs_free(USB_ROOT, "TEST_USB_FREE")
 #define data_free()  fs_free(TMP_DIR, "TEST_DATA_FREE")
+
+#include "dashboard.h"
 
 
 /**
@@ -650,6 +1048,32 @@ game_watch(void) {
  * Plain file backup
  * ---------------------------------------------------------------------- */
 
+static const char *
+backup_path_name(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return slash ? slash + 1 : path;
+}
+
+static void
+backup_scan_error(const char *problem, const char *subject, const char *src, int error) {
+  if(g_progress_planning) return;
+  logq("Cannot scan %s: %s", src, strerror(error));
+  notify_problem(NOTICE_ERROR, problem, subject, "Backup cannot read: %s.",
+                 backup_path_name(subject));
+}
+
+static struct dirent *
+backup_readdir(DIR *dir, const char *subject, const char *src) {
+  errno = 0;
+  struct dirent *entry = readdir(dir);
+  if(!entry && errno) {
+    int error = errno;
+    backup_scan_error("read-directory", subject, src, error);
+    errno = error;
+  }
+  return entry;
+}
+
 /**
  * Copy a single file from src to dst. The data is written to a temporary file
  * first, so that an interrupted copy (full or removed USB drive) never
@@ -669,6 +1093,8 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   int out = -1;
   int ok = 0;
   int aborted = 0;
+  int error;
+  const char *operation = "temporary file path";
   unsigned reads = 0;
 
   int progress_started = 0;
@@ -681,10 +1107,9 @@ backup_file(const char *src, const char *dst, const struct stat *st,
 
   /* per-file limit; not applied inside game saves, which are judged per game */
   if(g_file_cap && (uint64_t)st->st_size > g_file_cap) {
-    if(!seen_before(label)) {
-      logq("Abnormal size of %s; skipping backup", label);
-      notify("File skipped: too large.");
-    }
+    logq("Abnormal size of %s; skipping backup", label);
+    notify_problem(NOTICE_WARNING, "file-size", label, "File too large: %s.",
+                   backup_path_name(label));
     stats->skipped++;
     return;
   }
@@ -697,6 +1122,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   tmp[0] = 0;
   if(snprintf(tmp, sizeof tmp, "%s.part", dst) >= (int)sizeof tmp) {
     tmp[0] = 0;
+    errno = ENAMETOOLONG;
     goto done;
   }
 
@@ -710,6 +1136,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   /* make sure the USB drive can hold the new file */
   if(usb_free() < (uint64_t)st->st_size + SPACE_MARGIN) {
     logq("Failed to backup %s (not enough space on USB)", label);
+    notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
     stats->failed++;
     return;
   }
@@ -717,11 +1144,13 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   snprintf(dir, sizeof dir, "%s", dst);
   if((slash = strrchr(dir, '/')) && slash != dir) {
     *slash = 0;
+    operation = "create USB directory";
     if(mkdir_p(dir)) {
       goto done;
     }
   }
 
+  operation = "open source file";
   if((in = open(src, O_RDONLY)) < 0) {
     goto done;
   }
@@ -729,7 +1158,8 @@ backup_file(const char *src, const char *dst, const struct stat *st,
     progress_begin(st->st_size);
     progress_started = 1;
   }
-  backup_activity_begin();
+  backup_activity_begin("Changes found. Backing up.");
+  operation = "open USB file";
   if((out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0) {
     goto done;
   }
@@ -742,6 +1172,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
         if(errno == EINTR) {
           continue;
         }
+        operation = "write USB file";
         goto done;
       }
       progress_advance(w);
@@ -757,16 +1188,24 @@ backup_file(const char *src, const char *dst, const struct stat *st,
     }
   }
   if(n < 0) {
+    operation = "read source file";
     goto done;
   }
 
-  if(fstat(in, &after) || !source_same(st, &after)) {
-    logq("Source changed during copy: %s", src);
+  operation = "check source file";
+  if(fstat(in, &after)) {
     goto done;
   }
+  if(!source_same(st, &after)) {
+    operation = "source changed during copy";
+    errno = EAGAIN;
+    goto done;
+  }
+  operation = "sync USB file";
   if(fsync(out)) {
     goto done;
   }
+  operation = "close USB file";
   if(close(out)) {
     out = -1;
     goto done;
@@ -779,6 +1218,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   tv[1] = tv[0];
   utimes(tmp, tv);
 
+  operation = "commit USB file";
   if(rename(tmp, dst)) {
     goto done;
   }
@@ -787,6 +1227,7 @@ backup_file(const char *src, const char *dst, const struct stat *st,
   ok = 1;
 
 done:
+  error = errno;
   if(progress_started) progress_finish();
   if(in >= 0) {
     close(in);
@@ -803,7 +1244,15 @@ done:
       unlink(tmp);
     }
     if(!aborted) {
-      logq("Failed to backup %s", label);
+      logq("Failed to back up %s (%s): %s", label, operation, strerror(error));
+      if(error == ENOSPC) {
+        notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
+      } else if(error == EROFS) {
+        notify_problem(NOTICE_ERROR, "usb-read-only", NULL, "Backup USB is read-only.");
+      } else {
+        notify_problem(NOTICE_ERROR, operation, label, "File backup failed: %s.",
+                       backup_path_name(label));
+      }
       stats->failed++;
     }
   }
@@ -825,32 +1274,45 @@ is_backup_root(const struct stat *st) {
 
 /**
  * Back up everything below the directory src into dst, recursively.
+ * When given the source stat, return true only for a verified empty tree.
  **/
-static void
-backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
+static int
+backup_tree(const char *src, const char *dst, backup_stats_t *stats,
+            const struct stat *source) {
   char spath[PATH_MAX];
   char dpath[PATH_MAX];
   struct dirent *dp;
   struct stat st;
   DIR *dir;
+  int empty = source != NULL;
 
+  const char *label = dst + strlen(BACKUP_ROOT);
   if(!(dir = opendir(src))) {
-    logq("Failed to backup %s", dst + strlen(BACKUP_ROOT));
+    backup_scan_error("open-directory", label, src, errno);
     stats->failed++;
-    return;
+    return 0;
   }
 
-  while((dp = readdir(dir)) && !(g_watch_game && g_game_abort)) {
+  while((dp = backup_readdir(dir, label, src)) && !(g_watch_game && g_game_abort)) {
     if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
       continue;
     }
 
     if(snprintf(spath, sizeof spath, "%s/%s", src, dp->d_name) >= (int)sizeof spath ||
        snprintf(dpath, sizeof dpath, "%s/%s", dst, dp->d_name) >= (int)sizeof dpath) {
+      empty = 0;
+      if(!g_progress_planning) {
+        logq("Backup path too long: %s/%s", src, dp->d_name);
+        notify_problem(NOTICE_ERROR, "backup-path-length", label,
+                       "Backup path too long under %s.", backup_path_name(label));
+        stats->failed++;
+      }
       continue;
     }
 
     if(lstat(spath, &st)) {
+      empty = 0;
+      backup_scan_error("stat-file", dpath + strlen(BACKUP_ROOT), spath, errno);
       stats->failed++;
       continue;
     }
@@ -860,17 +1322,24 @@ backup_tree(const char *src, const char *dst, backup_stats_t *stats) {
        * is one of its ancestors. Skip it by identity, not by name, so the
        * walk stops here instead of recursing into the growing backup. */
       if(is_backup_root(&st)) {
+        empty = 0;
         logq("Skipping backup destination %s", spath);
         continue;
       }
-      backup_tree(spath, dpath, stats);
+      empty = backup_tree(spath, dpath, stats, empty ? &st : NULL);
     } else if(S_ISREG(st.st_mode)) {
+      empty = 0;
       backup_file(spath, dpath, &st, stats);
     }
     /* symlinks and special files are ignored */
   }
 
-  closedir(dir);
+  int read_error = !dp && errno;
+  if(read_error && !g_progress_planning) stats->failed++;
+  if(closedir(dir) || !empty || dp || read_error) return 0;
+
+  /* A concurrent creation, removal or replacement can invalidate an empty scan. */
+  return !stat(src, &st) && source_same(source, &st);
 }
 
 
@@ -973,7 +1442,7 @@ copy_plain(const char *src, const char *dst) {
   if((in = open(src, O_RDONLY)) < 0) {
     return -1;
   }
-  backup_activity_begin();
+  backup_activity_begin("Changes found. Backing up.");
   if((out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0777)) < 0) {
     close(in);
     return -1;
@@ -1109,12 +1578,18 @@ stamp_write(const char *dst_dir, const struct stat *img) {
   snprintf(path, sizeof path, "%s/.image_stamp", dst_dir);
   snprintf(part, sizeof part, "%s.part", path);
   FILE *f = fopen(part, "wb");
-  if(!f) return;
+  if(!f) {
+    logq("Cannot save image stamp %s: %s", path, strerror(errno));
+    return;
+  }
   int ok = fwrite("PS5IMG2\n", 1, 8, f) == 8 &&
            fwrite(&sig, 1, sizeof sig, f) == sizeof sig;
   if(fflush(f) || fsync(fileno(f))) ok = 0;
   if(fclose(f)) ok = 0;
-  if(!ok || rename(part, path)) unlink(part);
+  if(!ok || rename(part, path)) {
+    logq("Cannot commit image stamp %s", path);
+    unlink(part);
+  }
 }
 
 
@@ -1131,6 +1606,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   uint8_t sealed[0x60];
   uint8_t key[0x20];
   const char *save = name;
+  const char *operation = "read save metadata";
   sv_result_t result = SV_FAILED;
   unsigned failed_before;
   struct stat ist, after;
@@ -1151,7 +1627,11 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   save_dst_dir(dst_dir, sizeof dst_dir, ps5, uid, title, save);
   snprintf(label, sizeof label, "%s", dst_dir + strlen(BACKUP_ROOT));
 
-  if(stat(image, &ist) || !S_ISREG(ist.st_mode)) {
+  if(stat(image, &ist)) {
+    if(errno != ENOENT) backup_scan_error("stat-save-image", image, image, errno);
+    return SV_SKIP;
+  }
+  if(!S_ISREG(ist.st_mode)) {
     return SV_SKIP;
   }
 
@@ -1164,6 +1644,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   /* the size of the whole game was already checked per title id */
   if(ist.st_size < 0x860) {
     logq("Failed to backup %s (not a save image)", label);
+    notify_problem(NOTICE_ERROR, "save-image-format", label, "Invalid save image (%s).", title);
     stats->failed++;
     return SV_FAILED;
   }
@@ -1171,6 +1652,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   /* Use the image size as a conservative bound; do not rescan the USB tree. */
   if(usb_free() < (uint64_t)ist.st_size + SPACE_MARGIN) {
     logq("Failed to backup %s (not enough space on USB)", label);
+    notify_problem(NOTICE_ERROR, "usb-space", NULL, "Not enough USB space for backups.");
     stats->failed++;
     return SV_FAILED;
   }
@@ -1205,6 +1687,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
 
   if(!enough_space((uint64_t)ist.st_size + SPACE_MARGIN)) {
     logq("Failed to backup %s (not enough free space)", label);
+    notify_problem(NOTICE_ERROR, "console-space", NULL, "Not enough console storage for save backups.");
     stats->failed++;
     return SV_FAILED;
   }
@@ -1219,6 +1702,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   g_progress_image = 1;
   progress_begin(ist.st_size);
   progress_stage(ist.st_size, 0, 0.5);
+  operation = "stage save image";
   ret = copy_plain(image, TMP_IMG);
   if(ret == -2) {
     result = SV_GAME;
@@ -1237,14 +1721,16 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   }
 
   if(stat(image, &after) || !source_same(&ist, &after)) {
-    logq("Save image changed while staging: %s", label);
+    operation = "save image changed while staging";
     goto fail_cleanup;
   }
 
+  operation = "prepare save key";
   if(decrypt_key(sealed, key)) {
     goto fail_cleanup;
   }
 
+  operation = "prepare save mount directory";
   if(mkdir(PFS_ROOT, 0777) && errno != EEXIST) {
     goto fail_cleanup;
   }
@@ -1260,6 +1746,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
     result = SV_GAME;
     goto cleanup;
   }
+  operation = "mount save image";
   if(sceFsMountSaveData(&mopt, TMP_IMG, MOUNT_POINT, key) < 0) {
     rmdir(MOUNT_POINT);
     goto fail_cleanup;
@@ -1269,7 +1756,7 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   progress_stage(dir_size(MOUNT_POINT), 0.5, 0.5);
   failed_before = stats->failed;
   g_file_cap = 0;     /* the whole game was already judged against its limit */
-  backup_tree(MOUNT_POINT, dst_dir, stats);
+  backup_tree(MOUNT_POINT, dst_dir, stats, NULL);
   g_file_cap = MAX_FILE_SZ;
 
   game_watch();
@@ -1277,9 +1764,11 @@ backup_save_image(const char *uid, const char *title, const char *tdir,
   if(g_game_abort) {
     result = SV_GAME;
   } else if(stat(image, &after) || !source_same(&ist, &after)) {
-    logq("Save image changed during backup: %s", label);
+    operation = "save image changed during backup";
   } else if(stats->failed == failed_before) {
     result = SV_OK;
+  } else {
+    operation = NULL;   /* The file or directory failure was already reported. */
   }
   goto cleanup;
 
@@ -1292,7 +1781,7 @@ cleanup:
     if(unmount_save()) {
       g_mount_stuck = 1;
       logq("Failed to unmount save image; PS4/PS5 saves backup disabled");
-      notify("Save backup paused: cleanup failed.");
+      notify_problem(NOTICE_ERROR, "save-cleanup", NULL, "Save backup paused: cleanup failed.");
       g_watch_game = 0;
       progress_finish();
       g_progress_image = 0;
@@ -1311,13 +1800,15 @@ cleanup:
   if(result == SV_OK) {
     stamp_write(dst_dir, &ist);
   } else if(result == SV_FAILED) {
-    logq("Failed to backup %s", label);
-    stats->failed++;
+    goto fail;
   }
   return result;
 
 fail:
-  logq("Failed to backup %s", label);
+  logq("Failed to back up save %s (%s)", label, operation ? operation : "copy saved files");
+  if(operation) {
+    notify_problem(NOTICE_ERROR, operation, label, "Save backup failed (%s): %s.", title, save);
+  }
   stats->failed++;
   return SV_FAILED;
 }
@@ -1370,18 +1861,22 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
   snprintf(base, sizeof base, "%s/%s/%s", HOME_ROOT, uid,
            ps5 ? "savedata_prospero" : "savedata");
   if(!(bd = opendir(base))) {
+    if(errno != ENOENT) backup_scan_error("open-save-directory", base, base, errno);
     return;
   }
   if(!(imgs = calloc(MAX_IMAGES, sizeof *imgs))) {
     closedir(bd);
+    if(!g_progress_planning) {
+      notify_problem(NOTICE_ERROR, "save-scan-memory", NULL,
+                     "Not enough memory to scan saves.");
+    }
     return;
   }
 
-  while((td = readdir(bd)) && !g_mount_stuck) {
+  while((td = backup_readdir(bd, base, base)) && !g_mount_stuck) {
     char tdir[PATH_MAX];
     char tlabel[PATH_MAX];
     char dst_dir[PATH_MAX];
-    char key[PATH_MAX + 8];
     char a[32];
     char b[32];
     uint64_t total = 0;       /* all images of the game */
@@ -1398,10 +1893,14 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
     if(td->d_name[0] == '.') {
       continue;
     }
-    if(snprintf(tdir, sizeof tdir, "%s/%s", base, td->d_name) >= (int)sizeof tdir ||
-       stat(tdir, &st) || !S_ISDIR(st.st_mode)) {
+    if(snprintf(tdir, sizeof tdir, "%s/%s", base, td->d_name) >= (int)sizeof tdir) {
       continue;
     }
+    if(stat(tdir, &st)) {
+      if(errno != ENOENT) backup_scan_error("stat-save-title", tdir, tdir, errno);
+      continue;
+    }
+    if(!S_ISDIR(st.st_mode)) continue;
     pending_title_t *queued = pending_find(uid, td->d_name, ps5);
     if(g_pending_only && (!queued || !queued->ready)) continue;
     if(!g_progress_planning && queued) {
@@ -1409,21 +1908,26 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
       queued->retry_at = now_seconds() + g_interval;
     }
     if(!(id = opendir(tdir))) {
+      if(errno != ENOENT) backup_scan_error("open-save-title", tdir, tdir, errno);
       continue;
     }
 
     /* pass 1: size up the whole game without mounting anything */
-    while((ie = readdir(id))) {
+    while((ie = backup_readdir(id, tdir, tdir))) {
       const char *save;
       char path[PATH_MAX];
 
       if(!is_save_image(ie->d_name, ps5)) {
         continue;
       }
-      if(snprintf(path, sizeof path, "%s/%s", tdir, ie->d_name) >= (int)sizeof path ||
-         stat(path, &st) || !S_ISREG(st.st_mode)) {
+      if(snprintf(path, sizeof path, "%s/%s", tdir, ie->d_name) >= (int)sizeof path) {
         continue;
       }
+      if(stat(path, &st)) {
+        if(errno != ENOENT) backup_scan_error("stat-save-image", path, path, errno);
+        continue;
+      }
+      if(!S_ISREG(st.st_mode)) continue;
       if(n >= MAX_IMAGES) {
         overflow = 1;
         break;
@@ -1465,13 +1969,16 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
 
     /* 1. per-game size limit: the whole game or nothing */
     if(overflow || total > g_max_game) {
-      snprintf(key, sizeof key, "size:%s", tlabel);
-      if(!seen_before(key)) {
+      if(overflow) {
+        logq("Too many save images in %s (limit %d)", tlabel, MAX_IMAGES);
+        notify_problem(NOTICE_WARNING, "save-image-count", tlabel,
+                       "Too many save images (%s).", td->d_name);
+      } else {
         format_size(total, a, sizeof a);
         format_size(g_max_game, b, sizeof b);
-        logq("Abnormal size of %s; skipping backup (%s%s, limit %s)", tlabel,
-             overflow ? ">" : "", a, b);
-        notify("Game saves skipped: size limit exceeded.");
+        logq("Abnormal size of %s; skipping backup (%s, limit %s)", tlabel, a, b);
+        notify_problem(NOTICE_WARNING, "title-size", tlabel,
+                       "Game saves exceed the size limit (%s).", td->d_name);
       }
       stats->skipped++;
       continue;
@@ -1492,14 +1999,9 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
 
     /* 2. the largest image is copied to internal storage first */
     if(!enough_space(max_need + SPACE_MARGIN)) {
-      snprintf(key, sizeof key, "tmp:%s", tlabel);
-      if(!seen_before(key)) {
-        format_size(max_need + SPACE_MARGIN, a, sizeof a);
-        format_size(data_free(), b, sizeof b);
-        logq("Not enough internal storage for %s (need %s, free %s); "
-             "skipping backup", tlabel, a, b);
-        notify("Game saves skipped: not enough console storage.");
-      }
+      format_size(max_need + SPACE_MARGIN, a, sizeof a);
+      logq("Not enough internal storage for %s (need %s)", tlabel, a);
+      notify_problem(NOTICE_WARNING, "console-space", NULL, "Not enough console storage for save backups.");
       stats->skipped++;
       continue;
     }
@@ -1507,15 +2009,12 @@ scan_saves(const char *uid, int ps5, backup_stats_t *stats) {
     /* 3. the USB drive must be able to hold everything that is going to be
      * written (image sizes are an upper bound of the decrypted content) */
     required = need_total + SPACE_MARGIN;
-    if(usb_free() < required) {
-      snprintf(key, sizeof key, "usb:%s", tlabel);
-      if(!seen_before(key)) {
-        format_size(required, a, sizeof a);
-        format_size(usb_free(), b, sizeof b);
-        logq("Not enough space on USB for %s (need ~%s, free %s); "
-             "skipping backup", tlabel, a, b);
-        notify("Game saves skipped: not enough USB space.");
-      }
+    uint64_t available = usb_free();
+    if(available < required) {
+      format_size(required, a, sizeof a);
+      format_size(available, b, sizeof b);
+      logq("Not enough space on USB for %s (need ~%s, free %s)", tlabel, a, b);
+      notify_problem(NOTICE_WARNING, "usb-space", NULL, "Not enough USB space for backups.");
       stats->skipped++;
       continue;
     }
@@ -1552,17 +2051,22 @@ backup_console_dir(const char *src, backup_stats_t *stats) {
 
   if(lstat(src, &st)) {
     if(errno != ENOENT) {
-      logq("Failed to read %s", src);
+      backup_scan_error("stat-console-directory", src, src, errno);
       stats->failed++;
     }
     return;
   }
   if(!S_ISDIR(st.st_mode) || is_backup_root(&st)) return;
   if(snprintf(dst, sizeof dst, "%s%s", BACKUP_ROOT, src) >= (int)sizeof dst) {
+    if(!g_progress_planning) {
+      logq("Backup path too long: %s", src);
+      notify_problem(NOTICE_ERROR, "backup-path-length", src,
+                     "Backup path too long: %s.", backup_path_name(src));
+    }
     stats->failed++;
     return;
   }
-  backup_tree(src, dst, stats);
+  backup_tree(src, dst, stats, NULL);
 }
 
 
@@ -1584,12 +2088,15 @@ backup_saves(backup_stats_t *stats) {
     g_need_cleanup = 0;
   }
   if(decrypted && g_mount_stuck) {
-    logq("A previous save mount could not be removed; decrypted saves backup disabled");
+    if(!g_progress_planning) {
+      logq("A previous save mount could not be removed; decrypted saves backup disabled");
+      notify_problem(NOTICE_ERROR, "save-cleanup", NULL, "Save backup paused: cleanup failed.");
+    }
     stats->failed++;
   }
 
   if((hd = opendir(HOME_ROOT))) {
-    while((ud = readdir(hd))) {
+    while((ud = backup_readdir(hd, HOME_ROOT, HOME_ROOT))) {
       struct stat st;
       char path[PATH_MAX];
 
@@ -1597,7 +2104,11 @@ backup_saves(backup_stats_t *stats) {
         continue;
       }
       snprintf(path, sizeof path, "%s/%s", HOME_ROOT, ud->d_name);
-      if(lstat(path, &st) || !S_ISDIR(st.st_mode)) continue;
+      if(lstat(path, &st)) {
+        if(errno != ENOENT) backup_scan_error("stat-console-user", path, path, errno);
+        continue;
+      }
+      if(!S_ISDIR(st.st_mode)) continue;
 
       if(g_ps4saves && !g_mount_stuck) {
         scan_saves(ud->d_name, 0, stats);
@@ -1625,7 +2136,7 @@ backup_saves(backup_stats_t *stats) {
     }
     closedir(hd);
   } else {
-    logq("Failed to open %s", HOME_ROOT);
+    backup_scan_error("open-console-users", HOME_ROOT, HOME_ROOT, errno);
     stats->failed++;
   }
 
@@ -1677,32 +2188,78 @@ config_number(const char *value, long min, long max, long *out) {
   return 1;
 }
 
+static char *
+config_trim(char *line) {
+  while(*line == ' ' || *line == '\t') {
+    line++;
+  }
+  size_t len = strlen(line);
+  while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
+                    line[len-1] == ' '  || line[len-1] == '\t')) {
+    line[--len] = 0;
+  }
+  return line;
+}
+
+static void
+notification_config_entry(const char *line, notification_settings_t *settings) {
+  const char *value;
+  if((value = config_value(line, "backup_notifications", NULL))) {
+    if(!strcmp(value, "all")) settings->mode = NOTICES_ALL;
+    else if(!strcmp(value, "errors")) settings->mode = NOTICES_ERRORS;
+    else if(!strcmp(value, "off")) settings->mode = NOTICES_OFF;
+    else logq("Invalid backup_notifications: %s (expected all, errors or off)", value);
+  } else if((value = config_value(line, "backup_notifications_in_game", NULL))) {
+    parse_bool(value, &settings->in_game);
+  }
+}
+
+static int
+notification_config_read(FILE *f) {
+  notification_settings_t settings = notification_defaults;
+  char line[PATH_MAX + 16];
+  while(fgets(line, sizeof line, f)) notification_config_entry(config_trim(line), &settings);
+  if(ferror(f)) return 0;
+  notification_settings = settings;
+  return 1;
+}
+
+/* Read the policy even if the payload cannot start a backup pass. */
+static void
+notification_config_on_startup_error(void) {
+  FILE *f = fopen(CONF_PATH, "r");
+  if(!f) return;
+  notification_config_read(f);
+  fclose(f);
+}
+
 /**
- * Handle a single line from backup.conf.
+ * Handle a trimmed line from backup.conf.
  **/
 static void
 backup_entry(char *line, backup_stats_t *stats) {
   char dst[PATH_MAX];
   struct stat st;
-  size_t len;
-
-  /* trim whitespace and CR/LF */
-  while(*line == ' ' || *line == '\t') {
-    line++;
-  }
-  len = strlen(line);
-  while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
-                    line[len-1] == ' '  || line[len-1] == '\t')) {
-    line[--len] = 0;
-  }
+  size_t len = strlen(line);
 
   if(len == 0 || line[0] == '#') {
     return;
   }
+  const char *value;
 
+#ifndef BACKUP_HOST_TEST
+  if((value = config_value(line, "backup_usb_device", NULL))) {
+    if(!strcmp(value, "auto")) storage_requested_usb[0] = 0;
+    else if(storage_usb_number(value) >= 0)
+      snprintf(storage_requested_usb, sizeof storage_requested_usb, "%s", value);
+    else if(!g_progress_planning)
+      notify_problem(NOTICE_WARNING, "usb-invalid", NULL,
+                     "USB selection invalid. Choose /mnt/usb0 through /mnt/usb7.");
+    return;
+  }
+#endif
   /* Keep legacy key aliases for existing backup.conf files. All MB values
    * now mean decimal megabytes, including the legacy max_game_mb key. */
-  const char *value;
   if((value = config_value(line, "backup_interval_seconds", "interval"))) {
     long v;
     if(!config_number(value, MIN_INTERVAL, MAX_INTERVAL, &v)) {
@@ -1769,11 +2326,22 @@ backup_entry(char *line, backup_stats_t *stats) {
   }
 
   if(snprintf(dst, sizeof dst, "%s%s", BACKUP_ROOT, line) >= (int)sizeof dst) {
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-path-length", line, "Backup path is too long.");
     return;
   }
 
   if(stat(line, &st)) {
-    logq("Failed to backup %s", line);
+    if(!g_progress_planning) {
+      int error = errno;
+      const char *name = backup_path_name(line);
+      if(!*name || strlen(name) > 255) name = "configured path";
+      if(error == ENOENT || error == ENOTDIR)
+        notify_problem(NOTICE_WARNING, "config-path-missing", line, "Backup source missing: %s", name);
+      else
+        notify_problem(NOTICE_ERROR, "config-path-read", line, "Cannot read backup source: %s", name);
+      logq("Cannot stat %s: %s", line, strerror(error));
+    }
     stats->failed++;
     return;
   }
@@ -1783,7 +2351,8 @@ backup_entry(char *line, backup_stats_t *stats) {
    * by identity so that every spelling of the root is covered. */
   struct stat root;
   if(!stat("/", &root) && root.st_dev == st.st_dev && root.st_ino == st.st_ino) {
-    logq("Refusing to back up the filesystem root: %s", line);
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-root", line, "Filesystem-root backup refused.");
     stats->failed++;
     return;
   }
@@ -1791,19 +2360,28 @@ backup_entry(char *line, backup_stats_t *stats) {
   /* The source path is appended to BACKUP_ROOT to form the destination. */
   for(const char *part = strstr(line, "/.."); part; part = strstr(part + 3, "/..")) {
     if(part[3] == '/' || part[3] == 0) {
-      logq("Refusing to back up a path with a parent directory component: %s", line);
+      if(!g_progress_planning)
+        notify_problem(NOTICE_ERROR, "config-parent", line, "Backup path contains a parent directory (..).");
       stats->failed++;
       return;
     }
   }
   if(S_ISDIR(st.st_mode) && is_backup_root(&st)) {
-    logq("Refusing to back up the backup destination: %s", line);
+    if(!g_progress_planning)
+      notify_problem(NOTICE_ERROR, "config-destination", line, "Backup destination cannot be a source.");
     stats->failed++;
     return;
   }
 
   if(S_ISDIR(st.st_mode)) {
-    backup_tree(line, dst, stats);
+    if(backup_tree(line, dst, stats, g_progress_planning ? NULL : &st)) {
+      stats->empty_sources++;
+      const char *end = line + len;
+      while(end > line && end[-1] == '/') end--;
+      const char *name = end;
+      while(name > line && name[-1] != '/') name--;
+      logq("No files to back up in %.*s.", (int)(end - name), name);
+    }
   } else if(S_ISREG(st.st_mode)) {
     backup_file(line, dst, &st, stats);
   }
@@ -2008,7 +2586,13 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
     return -1;
   }
 
-  while((dp = readdir(dir)) && !rc) {
+  while(!rc) {
+    errno = 0;
+    dp = readdir(dir);
+    if(!dp) {
+      if(errno) rc = -1;
+      break;
+    }
     size_t len = strlen(dp->d_name);
 
     if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
@@ -2041,6 +2625,32 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
 }
 
 
+#ifndef BACKUP_HOST_TEST
+/* USB transfers share the existing adaptive progress timer and PS5 rich toasts,
+ * but use their own bundle so completion supersedes ONLY the prior percentage.
+ */
+static void usb_progress_notification(unsigned percent) {
+  atomic_store(&storage_migration_percent, percent);
+  char msg[96];
+  snprintf(msg, sizeof msg, "USB transfer progress: %u%%", percent);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(msg, "PS5Save+ USB", "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
+static void usb_transfer_notice(int completion, const char *message) {
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(
+        message, "PS5Save+ USB", completion ? "Always" : "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
+#include "usb_migrate.h"
+#endif
+
 static int
 cmp_desc(const void *a, const void *b) {
   return strcmp((const char*)b, (const char*)a);
@@ -2068,6 +2678,7 @@ daily_prune(const char *today) {
   if(!names || !stale || !(dir = opendir(DAILY_ROOT))) {
     free(names);
     free(stale);
+    notify_problem(NOTICE_WARNING, "daily-prune-scan", NULL, "Could not check daily snapshot retention.");
     return;
   }
 
@@ -2090,7 +2701,8 @@ daily_prune(const char *today) {
 
   for(int i = 0; i < ns; i++) {
     snprintf(path, sizeof path, "%s/%s", DAILY_ROOT, stale[i]);
-    remove_tree(path);
+    if(remove_tree(path))
+      notify_problem(NOTICE_WARNING, "daily-prune-part", stale[i], "Could not remove an unfinished snapshot.");
   }
 
   qsort(names, n, sizeof *names, cmp_desc);
@@ -2102,9 +2714,8 @@ daily_prune(const char *today) {
     snprintf(path, sizeof path, "%s/%s", DAILY_ROOT, names[i]);
     if(!remove_tree(path)) {
       logq("Daily backup %s deleted (keeping newest %d)", names[i], g_daily);
-      notify("Old daily snapshot removed.");
     } else {
-      logq("Failed to delete old daily backup %s", names[i]);
+      notify_problem(NOTICE_WARNING, "daily-prune", names[i], "Could not remove an old snapshot.");
     }
   }
 
@@ -2116,13 +2727,13 @@ daily_prune(const char *today) {
 /**
  * Create today's snapshot if there is none yet. Called after every live
  * backup pass, which covers every payload start, every wake-up from rest mode
- * and the midnight wake-up.
+ * and the midnight wake-up. Returns 1 for a saved snapshot, 0 when no
+ * snapshot is needed or possible yet, and -1 if a snapshot is skipped or fails.
  **/
-static void
+static int
 daily_check(void) {
   char final[PATH_MAX];
   char part[PATH_MAX];
-  char key[PATH_MAX];
   char tz[24];
   char a[32];
   char b[32];
@@ -2132,7 +2743,7 @@ daily_check(void) {
   uint64_t need;
 
   if(g_daily <= 0) {
-    return;
+    return 0;
   }
 
   local_clock(wall_clock(), &ci);
@@ -2143,29 +2754,25 @@ daily_check(void) {
   /* one snapshot per date: an existing one is never wiped or refreshed */
   if(!stat(final, &st) && S_ISDIR(st.st_mode)) {
     daily_prune(ci.date);
-    return;
+    return 0;
   }
 
   if(stat(BACKUP_ROOT, &st) || !S_ISDIR(st.st_mode)) {
     logq("Daily backup %s skipped: no live backup to copy yet", ci.date);
-    return;
+    return 0;
   }
 
   need = dir_size(BACKUP_ROOT) + SPACE_MARGIN;
   if(usb_free() < need) {
-    snprintf(key, sizeof key, "daily-space:%s", ci.date);
-    if(!seen_before(key)) {
-      format_size(need, a, sizeof a);
-      format_size(usb_free(), b, sizeof b);
-      logq("Not enough space on USB for daily backup %s (need ~%s, free %s); "
-           "skipping", ci.date, a, b);
-      notify("Daily snapshot skipped: not enough USB space.");
-    }
-    return;
+    format_size(need, a, sizeof a);
+    format_size(usb_free(), b, sizeof b);
+    logq("Not enough space on USB for daily backup %s (need ~%s, free %s)", ci.date, a, b);
+    notify_problem(NOTICE_WARNING, "usb-space", NULL, "Not enough USB space for backups.");
+    return -1;
   }
 
   progress_begin(need - SPACE_MARGIN);
-  backup_activity_begin();
+  backup_activity_begin("Creating daily snapshot.");
   mkdir_p(DAILY_ROOT);
   remove_tree(part);                     /* leftover of an interrupted copy */
 
@@ -2174,19 +2781,16 @@ daily_check(void) {
   if(copy_tree(BACKUP_ROOT, part, &bytes) || (sync(), rename(part, final))) {
     progress_finish();
     remove_tree(part);
-    snprintf(key, sizeof key, "daily-fail:%s", ci.date);
-    if(!seen_before(key)) {
-      logq("Failed to create daily backup %s", ci.date);
-      notify("Daily snapshot could not be saved.");
-    }
-    return;
+    logq("Failed to create daily backup %s", ci.date);
+    notify_problem(NOTICE_ERROR, "daily-copy", NULL, "Daily snapshot could not be saved.");
+    return -1;
   }
 
   progress_finish();
   format_size(bytes, a, sizeof a);
   logq("Daily backup %s created (%s, console time %s)", ci.date, a, tz);
-  notify("Daily snapshot saved.");
   daily_prune(ci.date);
+  return 1;
 }
 
 
@@ -2211,7 +2815,8 @@ next_due(double started) {
 
 
 /**
- * Run one backup pass. Returns -1 if backup.conf could not be opened.
+ * Run one backup pass. Returns -1 if backup.conf could not be opened,
+ * or -2 if it could not be read or rewound for the next scan.
  **/
 static int
 run_cycle(int pending_only) {
@@ -2225,22 +2830,42 @@ run_cycle(int pending_only) {
   /* escape the jail so that /data and /mnt/usb0 are reachable; done on every
    * cycle in case the state was reset while the console was suspended */
   kernel_set_proc_rootdir(pid, kernel_get_root_vnode());
+#ifndef BACKUP_HOST_TEST
+  /* Prevent a detached USB mountpoint from ever becoming an internal-disk
+   * backup destination if a stale config happens to exist beneath it. */
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
+    logq("Backup USB is no longer mounted: %s", USB_ROOT);
+    return -1;
+  }
+#endif
 
   if(!(f = fopen(CONF_PATH, "r"))) {
+    logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
     return -1;
   }
 
+#ifndef BACKUP_HOST_TEST
+  dashboard_set_running(1);
+#endif
   progress_reset();
+  /* Apply the policy before sending the scan status, including when it is
+   * declared after file paths in backup.conf. This pass reads only settings. */
+  if(!notification_config_read(f) || fseek(f, 0, SEEK_SET)) {
+    logq("Cannot read or rewind %s: %s", CONF_PATH, strerror(errno));
+    fclose(f);
+    return -2;
+  }
+  notification_issues_begin(pending_only);
   index_load();
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
   g_backup_busy = 0;
-  if(!g_start_notified) {
-    notify("Backup utility started");
-    g_start_notified = 1;
-  }
+  g_last_cycle_unchanged = 0;
   memset(&stats, 0, sizeof stats);
   start = now_seconds();
+#ifndef BACKUP_HOST_TEST
+  storage_requested_usb[0] = 0;
+#endif
 
   /* Settings are re-read from defaults on every cycle. */
   g_interval = DEF_INTERVAL;
@@ -2254,8 +2879,9 @@ run_cycle(int pending_only) {
 
   g_progress_planning = 1;
   while(fgets(line, sizeof line, f)) {
-    backup_entry(line, &stats);
+    backup_entry(config_trim(line), &stats);
   }
+  int config_read_failed = ferror(f);
   backup_saves(&stats);
   if(!g_pending_only && g_daily > 0) {
     clock_info_t ci;
@@ -2269,8 +2895,9 @@ run_cycle(int pending_only) {
   }
   g_progress_planning = 0;
   if(fseek(f, 0, SEEK_SET)) {
+    logq("Cannot rewind %s: %s", CONF_PATH, strerror(errno));
     fclose(f);
-    return -1;
+    return -2;
   }
   memset(&stats, 0, sizeof stats);
   g_interval = DEF_INTERVAL;
@@ -2278,10 +2905,12 @@ run_cycle(int pending_only) {
   g_daily = g_ps4saves = g_ps5saves = 0;
   g_encrypted_saves = g_ps4trophies = g_ps5trophies = 0;
   while(fgets(line, sizeof line, f)) {
-    backup_entry(line, &stats);
+    backup_entry(config_trim(line), &stats);
   }
-
+  config_read_failed |= ferror(f);
   fclose(f);
+  if(config_read_failed)
+    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not read backup.conf completely.");
 
   pending_disable();
   if(g_pending_only) {
@@ -2292,32 +2921,64 @@ run_cycle(int pending_only) {
 
   /* Regular files have already been processed. A deferred save-image pass
    * must not prevent a snapshot of the available live backup. */
+  int live_work_started = g_backup_busy;
   index_save();
-  if(!g_pending_only) daily_check();
+  int snapshot_result = g_pending_only ? 0 : daily_check();
   progress_stop();
+#ifndef BACKUP_HOST_TEST
+  atomic_store(&backup_copy_active, 0);
+#endif
+  if(!pending_only && !g_cycle_deferred && !g_mount_stuck && !config_read_failed)
+    notification_issues_end();
+#ifndef BACKUP_HOST_TEST
+  dashboard_cycle_done(&stats, g_cycle_deferred, snapshot_result,
+                       notification_cycle_failed || config_read_failed);
+#endif
 
-
-  if(stats.failed) {
-    /* announce only on the first failed cycle until recovery */
-    if(!g_last_failed) {
-      logq("Failed to backup (%u file(s) failed, %u copied)",
-           stats.failed, stats.copied);
-      notify("Backup incomplete (%u failed).", stats.failed);
-    }
-    g_last_failed = 1;
-  } else if(stats.copied || (g_last_failed && !g_cycle_deferred)) {
-    format_size(stats.bytes, size, sizeof size);
-    logq("Successful backup (%s) done in %.1f seconds.", size,
-         now_seconds() - start);
-    notify("Backup complete (%s).", size);
-    g_last_failed = 0;
+  g_last_cycle_unchanged = !stats.failed && !notification_cycle_failed &&
+      !g_cycle_deferred && !stats.skipped && !config_read_failed &&
+      snapshot_result == 0 && !live_work_started;
+  if(stats.failed || notification_cycle_failed) {
+    logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
   } else if(g_cycle_deferred) {
     logq("Backup pass finished; protected titles queued (%u files unchanged)", stats.unchanged);
+    /* A deferred save is expected while its title is protected. */
+  } else if(stats.skipped || snapshot_result < 0) {
+    logq("Backup pass finished with skips (%u files skipped)", stats.skipped);
+    /* Specific warnings are already emitted by the affected operation. */
+  } else if(live_work_started) {
+    format_size(stats.bytes, size, sizeof size);
+    logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
+    notify_backup_status(1, "Backup complete (%s).", size);
+  } else if(snapshot_result > 0) {
+    notify_backup_status(1, "Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
+    /* Routine unchanged passes remain silent; startup confirms the scan. */
+  }
+
+  /* A previously reported failure has actually cleared. For normal mode,
+   * the success toast is sufficient when data was copied. In errors mode,
+   * report recovery explicitly instead of showing a second success toast.
+   */
+  if(notification_recovered && !stats.failed && !notification_cycle_failed &&
+     !stats.skipped && !g_cycle_deferred && snapshot_result >= 0 &&
+     ((!live_work_started && snapshot_result == 0) ||
+      notification_settings.mode == NOTICES_ERRORS)) {
+    pthread_mutex_lock(&notification_mutex);
+    notification_emit_locked(NOTICE_WARNING, "Backup protection restored.");
+    pthread_mutex_unlock(&notification_mutex);
   }
 
   return 0;
+}
+
+static void
+report_config_error(int result) {
+  if(result == -2)
+    notify_problem(NOTICE_ERROR, "config-read", NULL, "Could not read backup.conf on USB.");
+  else
+    notify_problem(NOTICE_ERROR, "config-open", NULL, "Could not open backup.conf on USB.");
 }
 
 
@@ -2368,28 +3029,90 @@ acquire_lock(void) {
 }
 
 
+/* After standby the old exclusive-instance listener can be stale even if
+ * the process survives. Rebind it without replacing or stopping another
+ * process. If another instance owns the port, this instance must stop. */
+static int restore_instance_lock(int *lock) {
+  if(*lock >= 0) close(*lock);
+  *lock = -1;
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if(fd < 0) return -1;
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+  struct sockaddr_in addr = {0};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(LOCK_PORT);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if(bind(fd, (struct sockaddr *)&addr, sizeof addr) || listen(fd, 1)) {
+    logq("PS5Save+ instance lock could not be restored (%s).", strerror(errno));
+    close(fd);
+    return -1;
+  }
+  *lock = fd;
+  logq("PS5Save+ instance lock restored after standby.");
+  return 0;
+}
+
 /**
  * Wait on monotonic interval deadlines, with short checks for closed queued
  * titles. A close retry does not reset the next regular backup deadline.
  **/
-/* 0 = regular deadline, 1 = replacement requested, 2 = queued title closed. */
-static int
-wait_until(double due, int lock) {
+/* 0 = regular deadline; 1 = replacement requested; 2 = queued title closed;
+ * 3 = exclusive lock could not be restored, so exit rather than risk two
+ * independent backup writers. */
+static int wait_until(double due, int *lock) {
   for(;;) {
+#ifndef BACKUP_HOST_TEST
+    if(backup_resume_requested) {
+      backup_resume_requested = 0;
+      if(restore_instance_lock(lock)) return 3;
+    }
+    /* Detect invalidated lock sockets even without a resume signal. */
+    struct pollfd check = {.fd = *lock, .events = POLLIN, .revents = 0};
+    int state = poll(&check, 1, 0);
+    if(state < 0 && errno != EINTR) return 3;
+    if(state > 0) {
+      if(check.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        if(restore_instance_lock(lock)) return 3;
+      } else if(check.revents & POLLIN) {
+        int c = accept(*lock, NULL, NULL);
+        if(c >= 0) close(c);
+        return 1;
+      }
+    }
+#endif
     double remaining = due - now_seconds();
     if(remaining <= 0) return 0;
     int slice = pending_titles ? CLOSE_POLL_SEC : SLICE_SEC;
     if(pending_ready()) return 2;
     int ms = remaining > slice ? slice * 1000 : (int)(remaining * 1000) + 1;
-    struct pollfd pfd = {lock, POLLIN, 0};
-    if(poll(&pfd, lock >= 0 ? 1 : 0, ms) > 0 && (pfd.revents & POLLIN)) {
-      int c = accept(lock, 0, 0);
-      if(c >= 0) close(c);
-      return 1;
+    struct pollfd pfd = {.fd = *lock, .events = POLLIN, .revents = 0};
+    int ready = poll(&pfd, *lock >= 0 ? 1 : 0, ms);
+    if(ready < 0) {
+      if(errno == EINTR) continue;
+      return 3;
+    }
+    if(ready > 0) {
+      if(pfd.revents & POLLIN) {
+        int c = accept(*lock, NULL, NULL);
+        if(c >= 0) close(c);
+        return 1;
+      }
+#ifndef BACKUP_HOST_TEST
+      if(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        if(restore_instance_lock(lock)) return 3;
+      }
+#endif
     }
   }
 }
 
+
+/* Reuse the validated standalone tile installer inside the main payload.
+ * Errors remain non-fatal to backups and dashboard access. */
+#ifndef BACKUP_HOST_TEST
+#include "launcher_installer.c"
+#endif
 
 int
 main(void) {
@@ -2405,26 +3128,79 @@ main(void) {
   signal(SIGPIPE, SIG_IGN);
 
   kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
+#ifndef BACKUP_HOST_TEST
+  /* PLDMGR reads the kernel thread/process label. Match its own
+   * SYS_thr_set_name mechanism rather than relying on the ELF filename. */
+  if(syscall(SYS_thr_set_name, -1, "ps5saveplus.elf") < 0)
+    logq("Could not set process label: errno %d", errno);
+#endif
   lock = acquire_lock();
   if(lock < 0) {
-    notify("Backup could not start: instance lock unavailable.");
+    notification_config_on_startup_error();
+    notify_problem(NOTICE_ERROR, "instance-lock", NULL, "Backup could not start: instance lock unavailable.");
     return EXIT_FAILURE;
   }
 
   if(!(g_buf = malloc(COPY_BUF_SZ))) {
-    notify("Backup could not start: not enough memory.");
+    notification_config_on_startup_error();
+    notify_problem(NOTICE_ERROR, "startup-memory", NULL, "Backup could not start: not enough memory.");
     return EXIT_FAILURE;
   }
 
-  /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
-  started = now_seconds();
-  if(run_cycle(0) < 0) {
-    notify("backup.conf not found on USB.");
+#ifndef BACKUP_HOST_TEST
+  if(storage_choose_initial_usb()) {
+    notify_problem(NOTICE_ERROR, "usb-detection", NULL,
+                   "No writable USB drive available for backups.");
     return EXIT_FAILURE;
   }
+#endif
+  if(storage_prepare()) {
+    notify_problem(NOTICE_ERROR, "storage-layout", NULL,
+                   "Backup storage layout unavailable. Check USB folders; no backup was started.");
+    return EXIT_FAILURE;
+  }
+#ifndef BACKUP_HOST_TEST
+  /* Only once per ELF launch, after logs are available on the selected USB.
+   * Use cumulative Debug rather than a native backup toast: this is a
+   * storage-selection diagnostic, not a backup result. */
+  char usb_conflict_message[512];
+  if(storage_startup_conflict_message(usb_conflict_message,
+                                      sizeof usb_conflict_message)) {
+    logq("%s", usb_conflict_message);
+    storage_debug(usb_conflict_message);
+  }
+  if(storage_mark_active()) logq("Could not write USB selection marker.");
+#endif
+
+#ifndef BACKUP_HOST_TEST
+  /* Title registration requires no running web server. Skip silently on later
+   * launches; a first-time failure must not prevent backup operations. */
+  if(ps5save_launcher_install() != 0)
+    logq("Home-screen launcher installation failed; backup service continues.");
+  dashboard_start();
+  backup_power_guard_start();
+#endif
+  /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
+  started = now_seconds();
+  int result = run_cycle(0);
+  if(result < 0) {
+    report_config_error(result);
+    return EXIT_FAILURE;
+  }
+#ifndef BACKUP_HOST_TEST
+  if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+    if(usb_migrate_to(storage_requested_usb)) {
+      logq("USB transfer failed: %s", storage_move_error);
+      notify_problem(NOTICE_ERROR, "usb-move", NULL,
+                     "USB transfer failed. See dashboard logs.");
+    }
+  }
+#endif
+  /* An initial successful pass is the only time we confirm startup. */
+  if(g_last_cycle_unchanged)
+    notify_info("Backup up to date. No changes.");
   if(g_daily > 0) {
-    /* shows the date and UTC offset the payload sees, to check them against
-     * the console's clock */
+    /* Log the date and UTC offset the payload sees. */
     clock_info_t ci;
     char tz[24];
 
@@ -2432,7 +3208,6 @@ main(void) {
     format_offset(ci.offset_min, tz, sizeof tz);
     logq("Daily backups on: keeping newest %d (console date %s, %s)",
          g_daily, ci.date, tz);
-    notify("Daily snapshots enabled (%d kept).", g_daily);
   }
 
   due = next_due(started);
@@ -2443,18 +3218,24 @@ main(void) {
       return EXIT_SUCCESS;
     }
 #endif
-    int wake = wait_until(due, lock);
+    int wake = wait_until(due, &lock);
     if(wake == 1) {
-      notify("Previous backup instance stopped.");
+      logq("Previous backup instance stopped.");
       break;
+    }
+    if(wake == 3) {
+      logq("Backup service stopped: exclusive instance lock unavailable.");
+      break; /* Never continue with an unprotected backup writer. */
     }
 
     started = now_seconds();
-    if(run_cycle(wake == 2) < 0) {
+    result = run_cycle(wake == 2);
+    if(result < 0) {
       /* USB drive may still be mounting after rest mode: retry shortly and
        * only complain if it stays missing */
-      if(++missing == MISSING_TRIES) {
-        notify("backup.conf not found on USB.");
+      if(missing < MISSING_TRIES) missing++;
+      if(missing == MISSING_TRIES) {
+        report_config_error(result);
       }
       pending_retry_after = now_seconds() + SLICE_SEC * 3;
       due = pending_retry_after;
@@ -2464,6 +3245,15 @@ main(void) {
     cycles++;
 #endif
 
+#ifndef BACKUP_HOST_TEST
+    if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+      if(usb_migrate_to(storage_requested_usb)) {
+        logq("USB transfer failed: %s", storage_move_error);
+        notify_problem(NOTICE_ERROR, "usb-move", NULL,
+                       "USB transfer failed. See dashboard logs.");
+      }
+    }
+#endif
     if(missing >= MISSING_TRIES) {
       logq("backup.conf is back");
     }
