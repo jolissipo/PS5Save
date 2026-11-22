@@ -7,9 +7,15 @@
 #ifndef BACKUP_HOST_TEST
 
 #define DASHBOARD_PORT 8755
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+#define DASHBOARD_DATA_DIR STORAGE_ROOT
+#define DASHBOARD_HISTORY storage_history_path
+#define DASHBOARD_HISTORY_ROTATED storage_history_rotated
+#else
 #define DASHBOARD_DATA_DIR USB_ROOT "/ps5save-plus"
 #define DASHBOARD_HISTORY DASHBOARD_DATA_DIR "/history.tsv"
 #define DASHBOARD_HISTORY_ROTATED DASHBOARD_DATA_DIR "/history.tsv.1"
+#endif
 #define DASHBOARD_HISTORY_MAX (128 * 1024)
 #define DASHBOARD_REQUEST_MAX 4096
 #define DASHBOARD_FILE_MAX (64 * 1024)
@@ -260,11 +266,19 @@ static void dashboard_serve_log_tail_file(int fd, const char *path) {
 }
 
 static void dashboard_serve_log_tail(int fd) {
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  dashboard_serve_log_tail_file(fd, storage_log_path);
+#else
   dashboard_serve_log_tail_file(fd, DASHBOARD_DATA_DIR "/events.log");
+#endif
 }
 static void dashboard_serve_installer_log(int fd) {
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  dashboard_serve_log_tail_file(fd, storage_installer_log);
+#else
   dashboard_serve_log_tail_file(fd,
                                 DASHBOARD_DATA_DIR "/launcher-installer.log");
+#endif
 }
 
 static int dashboard_snapshot_name(const char *s) {
