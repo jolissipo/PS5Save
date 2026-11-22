@@ -760,6 +760,9 @@ mkdir_p(const char *path) {
   return 0;
 }
 
+#ifndef BACKUP_HOST_TEST
+#include "usb_storage.h"
+#endif
 
 /* Embed the same default configuration published in the repository: there
  * is only one source of defaults for the distributed ELF and the example.
@@ -3004,6 +3007,13 @@ main(void) {
     return EXIT_FAILURE;
   }
 
+#ifndef BACKUP_HOST_TEST
+  if(storage_choose_initial_usb()) {
+    notify_problem(NOTICE_ERROR, "usb-detection", NULL,
+                   "No writable USB drive available for backups.");
+    return EXIT_FAILURE;
+  }
+#endif
   if(storage_prepare()) {
     notify_problem(NOTICE_ERROR, "storage-layout", NULL,
                    "Backup storage layout unavailable. Check USB folders; no backup was started.");
