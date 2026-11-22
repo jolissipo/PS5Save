@@ -171,6 +171,39 @@ int main(void) {
   file_expect(path,"USB0 user data");
   assert(!strcmp(USB_ROOT,second));
 
-  puts("PASS USB detection, preferences, full transfer, collision, symlink and source preservation");
+  /* Restart: the only existing backup on USB1 wins, even if USB0 is free. */
+  char warning[1024];
+  assert(!storage_choose_initial_usb() && !strcmp(USB_ROOT, second));
+  assert(!storage_startup_conflict_message(warning, sizeof warning));
+
+  /* If another independent PS5Save+ folder exists, warn and preserve BOTH. */
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup", first);
+  make_dirs(path);
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
+  file_write(path, "backup_usb_device=auto\\n");
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/spare.bin", first);
+  file_write(path, "other USB saves");
+  assert(!storage_choose_initial_usb());
+  assert(!strcmp(USB_ROOT, second)); /* USB1's active marker has priority. */
+  assert(storage_startup_conflict_message(warning, sizeof warning));
+  assert(strstr(warning, first) && strstr(warning, second));
+  assert(strstr(warning, "Selected ") && strstr(warning, "Other backups left unchanged."));
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/spare.bin", first);
+  file_expect(path, "other USB saves");
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/file.bin", second);
+  file_expect(path, "USB0 user data");
+
+  /* An explicit preference in the first USB's own config outranks a marker. */
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
+  char preferred[PATH_MAX + 64];
+  snprintf(preferred, sizeof preferred, "backup_usb_device=%s\\n", first);
+  file_write(path, preferred);
+  assert(!storage_choose_initial_usb() && !strcmp(USB_ROOT, first));
+  assert(storage_startup_conflict_message(warning, sizeof warning));
+  assert(strstr(warning, "Other backups left unchanged."));
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/file.bin", second);
+  file_expect(path, "USB0 user data");
+
+  puts("PASS USB detection, preferences, migration, duplicate-install diagnostics and data preservation");
   return 0;
 }
