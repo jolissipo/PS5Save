@@ -62,7 +62,7 @@ typedef struct {
   char padding[45];
   char message[3075];
 } launcher_debug_request_t;
-int sceKernelSendNotificationRequest(int, launcher_debug_request_t *, size_t, int);
+int sceKernelSendNotificationRequest(int, void *, size_t, int);
 
 static void launcher_log(const char *message) {
   const char *paths[] = { LAUNCHER_LOG, LAUNCHER_LOG_FALLBACK };
