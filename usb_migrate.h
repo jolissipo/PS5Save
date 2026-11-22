@@ -152,7 +152,7 @@ static int usb_migrate_to(const char *target) {
     }
   } else if(errno != ENOENT) return -1;
 
-  storage_migrating = 1;
+  atomic_store(&storage_migrating, 1);
   int ok = 0;
   if(!mkdir(stage, 0700)) {
     char marker[PATH_MAX];
@@ -172,7 +172,7 @@ static int usb_migrate_to(const char *target) {
   if(!ok) {
     snprintf(storage_move_error, sizeof storage_move_error,
              "USB transfer or byte-for-byte verification failed. Original preserved.");
-    storage_migrating = 0;
+    atomic_store(&storage_migrating, 0);
     return -1; /* The marked staging directory is recoverable on next try. */
   }
 
@@ -196,7 +196,7 @@ static int usb_migrate_to(const char *target) {
     logq("USB migration completed, but old backup could not be deleted: %s", source);
   }
   storage_move_error[0] = 0;
-  storage_migrating = 0;
+  atomic_store(&storage_migrating, 0);
   logq("Backup storage transferred to %s", USB_ROOT);
   notify_info("Backup storage moved to %s.", USB_ROOT);
   return 0;
