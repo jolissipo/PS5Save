@@ -119,9 +119,13 @@ along with this program; see the file COPYING. If not, see
 #define PFSMGR_DEV    "/dev/pfsmgr"
 #endif
 
-#define CONF_PATH     USB_ROOT "/backup.conf"
-#define BACKUP_ROOT   USB_ROOT "/backup"
-#define DAILY_ROOT    USB_ROOT "/backup_daily"
+#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
+#define CONF_PATH     STORAGE_ROOT "/backup.conf"
+#define BACKUP_ROOT   STORAGE_ROOT "/backup"
+#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
+#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
+#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
+#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #define MAX_DAILY     10      /* highest value for daily_snapshots_to_keep= */
 #define MAX_DAILY_DIRS 1024   /* date folders looked at when pruning */
 #define TMP_IMG       TMP_DIR "/_backup_tmp_image"
@@ -685,6 +689,145 @@ mkdir_p(const char *path) {
   }
 
   return 0;
+}
+
+
+/* Embed the same default configuration published in the repository: there
+ * is only one source of defaults for the distributed ELF and the example.
+ * Never overwrite an existing configuration.
+ */
+__asm__(".section .rodata\n"
+        ".global ps5save_default_config\n"
+        ".global ps5save_default_config_end\n"
+        ".global ps5save_default_config_size\n"
+        ".align 16\n"
+        "ps5save_default_config:\n"
+        ".incbin \"backup.conf\"\n"
+        "ps5save_default_config_end:\n"
+        "ps5save_default_config_size:\n"
+        ".quad ps5save_default_config_end - ps5save_default_config\n"
+        ".previous");
+extern const unsigned char ps5save_default_config[];
+extern const size_t ps5save_default_config_size;
+
+/* Only configuration creation emits Debug notifications. All normal backup
+ * results continue to use the existing rich Sony toast API. */
+typedef struct {
+  char padding[45];
+  char message[3075];
+} storage_debug_request_t;
+int sceKernelSendNotificationRequest(int, storage_debug_request_t *, size_t, int);
+static void storage_debug(const char *message) {
+  storage_debug_request_t request = {0};
+  snprintf(request.message, sizeof request.message, "%s", message);
+  sceKernelSendNotificationRequest(0, &request, sizeof request, 0);
+}
+
+static int storage_write_exact(int fd, const unsigned char *data, size_t len) {
+  size_t used = 0;
+  while(used < len) {
+    ssize_t n = write(fd, data + used, len - used);
+    if(n < 0 && errno == EINTR) continue;
+    if(n <= 0) return -1;
+    used += (size_t)n;
+  }
+  return 0;
+}
+
+/* Only a missing config is generated. A previous custom configuration is
+ * migrated as-is, before the default file is considered.
+ */
+static int storage_default_config(void) {
+  struct stat st;
+  if(!lstat(CONF_PATH, &st)) {
+    if(!S_ISREG(st.st_mode)) {
+      logq("Configuration path exists but is not a regular file: %s", CONF_PATH);
+      return -1;
+    }
+    return 0;
+  }
+  if(errno != ENOENT) return -1;
+
+  const char *temp = CONF_PATH ".part";
+  int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if(fd < 0 && errno == EEXIST) {
+    /* Incomplete file from an interrupted earlier attempt. No real config
+     * is ever removed or overwritten. */
+    if(unlink(temp)) return -1;
+    fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  }
+  if(fd < 0) return -1;
+  int good = !storage_write_exact(fd, ps5save_default_config,
+                                  ps5save_default_config_size) &&
+             !fsync(fd);
+  if(close(fd)) good = 0;
+  if(good && !lstat(CONF_PATH, &st)) good = 0;
+  if(good && rename(temp, CONF_PATH)) good = 0;
+  if(!good) {
+    unlink(temp);
+    logq("Could not safely create %s: %s", CONF_PATH, strerror(errno));
+    return -1;
+  }
+  logq("Created default configuration: %s", CONF_PATH);
+  storage_debug("PS5Save+: backup.conf criado com as definicoes padrao em ps5save-plus.");
+  return 1;
+}
+
+static int storage_move_legacy(const char *legacy, const char *destination,
+                               int expect_dir) {
+  struct stat old_st, new_st;
+  if(lstat(legacy, &old_st)) return errno == ENOENT ? 0 : -1;
+  if((expect_dir && !S_ISDIR(old_st.st_mode)) ||
+     (!expect_dir && !S_ISREG(old_st.st_mode))) {
+    logq("Legacy storage path is not the expected type: %s", legacy);
+    return -1;
+  }
+  if(!lstat(destination, &new_st)) {
+    /* A conflicting backup directory must never be erased or merged
+     * automatically. Stop the migration and preserve both trees. */
+    if(expect_dir) {
+      logq("Storage migration conflict; both directories exist: %s and %s",
+           legacy, destination);
+      return -1;
+    }
+    /* Both configs exist: the new one takes precedence, the legacy original
+     * is left untouched for manual recovery. */
+    logq("Retaining pre-existing legacy config; new config takes precedence.");
+    return 0;
+  }
+  if(errno != ENOENT || rename(legacy, destination)) {
+    logq("Could not move legacy storage %s to %s: %s",
+         legacy, destination, strerror(errno));
+    return -1;
+  }
+  logq("Migrated legacy storage %s to %s", legacy, destination);
+  return 1;
+}
+
+/* Called before the web server and before the first backup pass. Migrates
+ * all three old paths on the same USB filesystem through rename(), avoiding
+ * gigabytes of recopy or destructive deletion.
+ *
+ * Migration is restartable after interruption. A conflict halts startup,
+ * instead of silently switching to a fresh, empty set of backups.
+ */
+static int storage_prepare(void) {
+  struct stat st;
+  if(lstat(USB_ROOT, &st) || !S_ISDIR(st.st_mode)) {
+    logq("USB storage is unavailable: %s", USB_ROOT);
+    return -1;
+  }
+  if(mkdir_p(STORAGE_ROOT)) {
+    logq("Could not create PS5Save+ directory: %s", STORAGE_ROOT);
+    return -1;
+  }
+  if(lstat(STORAGE_ROOT, &st) || !S_ISDIR(st.st_mode)) return -1;
+
+  if(storage_move_legacy(LEGACY_BACKUP_ROOT, BACKUP_ROOT, 1) < 0 ||
+     storage_move_legacy(LEGACY_DAILY_ROOT, DAILY_ROOT, 1) < 0 ||
+     storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0)
+    return -1;
+  return storage_default_config() < 0 ? -1 : 0;
 }
 
 
@@ -2768,6 +2911,12 @@ main(void) {
   if(!(g_buf = malloc(COPY_BUF_SZ))) {
     notification_config_on_startup_error();
     notify_problem(NOTICE_ERROR, "startup-memory", NULL, "Backup could not start: not enough memory.");
+    return EXIT_FAILURE;
+  }
+
+  if(storage_prepare()) {
+    notify_problem(NOTICE_ERROR, "storage-layout", NULL,
+                   "Backup storage layout unavailable. Check USB folders; no backup was started.");
     return EXIT_FAILURE;
   }
 
