@@ -41,6 +41,16 @@ static double toast_times[LOG_CAPACITY];
 static unsigned sent, logged;
 static int fail_notification_send;
 static int test_console_language = 1;
+static int storage_debug_count;
+static char storage_debug_last[512];
+int sceKernelSendNotificationRequest(int device, storage_debug_request_t *request,
+                                     size_t size, int unused) {
+  assert(device == 0 && size == sizeof *request && unused == 0);
+  assert(strlen(request->message) < sizeof storage_debug_last);
+  strcpy(storage_debug_last, request->message);
+  storage_debug_count++;
+  return 0;
+}
 int sceSystemServiceParamGetInt(int param_id, int *value) {
   assert(param_id == 1);
   *value = test_console_language;
@@ -510,17 +520,73 @@ test_concurrent(void) {
   assert(toast_count("Transport delivery test") == 1);
 }
 
+static void
+test_layout(void) {
+  /* New installation creates only the missing configuration and announces
+   * the event through Debug, not the normal backup notification system. */
+  assert(!storage_prepare());
+  assert(storage_debug_count == 1);
+  assert(strstr(storage_debug_last, "backup.conf criado"));
+  assert(access(CONF_PATH, R_OK) == 0);
+  assert(toast_count(NULL) == 0);
+  expect_file(CONF_PATH, "# PS5Save+ default configuration\n");
+  assert(!storage_prepare() && storage_debug_count == 1);
+
+  /* Now simulate the real legacy layout from PS5Save, with indexed data. */
+  assert(!unlink(CONF_PATH) && !rmdir(STORAGE_ROOT));
+  assert(!mkdir_p(LEGACY_BACKUP_ROOT));
+  assert(!mkdir_p(LEGACY_DAILY_ROOT "/2026-11-22"));
+  write_text(LEGACY_BACKUP_ROOT "/example.dat", "old backup");
+  write_text(LEGACY_DAILY_ROOT "/2026-11-22/example.dat", "snapshot");
+  write_text(LEGACY_CONF_PATH, "backup_interval_seconds=300\nbackup_ps4_saves=false\n");
+  char old_index_name[] = LEGACY_BACKUP_ROOT "/example.dat";
+  FILE *idx = fopen(LEGACY_BACKUP_ROOT "/.ps5save-index", "wb");
+  assert(idx);
+  uint32_t old_length = (uint32_t)strlen(old_index_name);
+  file_signature_t sig = {0};
+  assert(fwrite("PS5IDX2\n", 1, 8, idx) == 8);
+  assert(fwrite(&old_length, sizeof old_length, 1, idx) == 1);
+  assert(fwrite(old_index_name, 1, old_length, idx) == old_length);
+  assert(fwrite(&sig, sizeof sig, 1, idx) == 1);
+  assert(fwrite(&sig, sizeof sig, 1, idx) == 1);
+  assert(!fclose(idx));
+
+  assert(!storage_prepare());
+  assert(storage_debug_count == 1);
+  assert(access(LEGACY_CONF_PATH, F_OK) != 0);
+  assert(access(LEGACY_BACKUP_ROOT, F_OK) != 0);
+  assert(access(LEGACY_DAILY_ROOT, F_OK) != 0);
+  expect_file(CONF_PATH, "backup_interval_seconds=300\n");
+  expect_file(BACKUP_ROOT "/example.dat", "old backup");
+  expect_file(DAILY_ROOT "/2026-11-22/example.dat", "snapshot");
+  index_load();
+  assert(index_dirty && index_record(BACKUP_ROOT "/example.dat", 0) != NULL);
+  index_save();
+  index_clear();
+  index_load();
+  assert(!index_dirty && index_record(BACKUP_ROOT "/example.dat", 0) != NULL);
+
+  /* Ambiguous legacy and new data must not be merged automatically. */
+  assert(!mkdir_p(LEGACY_BACKUP_ROOT));
+  write_text(LEGACY_BACKUP_ROOT "/conflict.dat", "important legacy");
+  assert(storage_prepare() < 0);
+  expect_file(LEGACY_BACKUP_ROOT "/conflict.dat", "important legacy");
+  expect_file(BACKUP_ROOT "/example.dat", "old backup");
+}
+
 int
 main(int argc, char **argv) {
   assert(argc == 2);
   assert(!mkdir_p(USB_ROOT) && !mkdir_p(HOME_ROOT));
+  if(strcmp(argv[1], "layout")) assert(!mkdir_p(STORAGE_ROOT));
   assert(!setenv("TEST_USB_FREE", "1073741824", 1));
   assert(!setenv("TEST_DATA_FREE", "1073741824", 1));
   assert(!setenv("TEST_ACTIVE_TITLES", ACTIVITY_PATH, 1));
   write_text(ACTIVITY_PATH, "");
   if(strcmp(argv[1], "off")) assert((g_buf = malloc(COPY_BUF_SZ)) != NULL);
 
-  if(!strcmp(argv[1], "legacy")) test_legacy();
+  if(!strcmp(argv[1], "layout")) test_layout();
+  else if(!strcmp(argv[1], "legacy")) test_legacy();
   else if(!strcmp(argv[1], "settings")) test_settings();
   else if(!strcmp(argv[1], "errors")) test_errors();
   else if(!strcmp(argv[1], "off")) test_off();
