@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #ifndef PROGRESS_INTERVAL_SECONDS
-#define PROGRESS_INTERVAL_SECONDS 30
+#define PROGRESS_INTERVAL_SECONDS 60
 #endif
 
 static pthread_mutex_t progress_mutex = PTHREAD_MUTEX_INITIALIZER;
