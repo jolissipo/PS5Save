@@ -292,6 +292,10 @@ static int editor_validate(const char *text, size_t length) {
           ok = editor_integer(equal, 0, 10);
         else if(!strcmp(key, "backup_notifications"))
           ok = !strcmp(equal, "all") || !strcmp(equal, "errors") || !strcmp(equal, "off");
+        else if(!strcmp(key, "backup_usb_device"))
+          ok = !strcmp(equal, "auto") ||
+               (strlen(equal) == 9 && !strncmp(equal, "/mnt/usb", 8) &&
+                equal[8] >= '0' && equal[8] <= '7');
         else if(!strcmp(key, "backup_notifications_in_game") ||
                 !strcmp(key, "backup_ps4_saves") ||
                 !strcmp(key, "backup_ps5_saves") ||
@@ -351,6 +355,12 @@ static void editor_save(int fd, const char *headers,
     dashboard_text(fd, 403, "Pair this browser with the PS5 before editing.");
     return;
   }
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  if(atomic_load(&storage_migrating)) {
+    dashboard_text(fd, 409, "USB storage transfer in progress. Try again after completion.");
+    return;
+  }
+#endif
   char version[32];
   if(editor_header(headers, "X-PS5Save-Version", version, sizeof version) != 1 ||
      strlen(version) != 16) {
@@ -376,6 +386,36 @@ static void editor_save(int fd, const char *headers,
     dashboard_text(fd, 422, "Configuration is invalid. No changes were saved.");
     return;
   }
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  /* Explicit destinations must be mounted writable USB devices. Never
+   * accept a path within /data or any other internal filesystem. */
+  char *draft = malloc(len + 1);
+  if(!draft) {free(old);dashboard_text(fd, 503, "Insufficient memory.");return;}
+  memcpy(draft, body, len);draft[len] = 0;
+  char *saveptr = NULL;
+  for(char *line = strtok_r(draft, "\n", &saveptr);line;
+      line = strtok_r(NULL, "\n", &saveptr)) {
+    char *key = strstr(line, "backup_usb_device");
+    if(!key) continue;
+    if(key != line) {
+      while(line < key && (*line == ' ' || *line == '\t')) line++;
+      if(line != key) continue;
+    }
+    char *eq = strchr(key, '=');
+    if(!eq) continue;
+    eq++;
+    while(*eq == ' ' || *eq == '\t') eq++;
+    char *end = eq + strlen(eq);
+    while(end > eq && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
+      *--end = 0;
+    if(strcmp(eq, "auto") && !storage_usb_online(eq, NULL, NULL)) {
+      free(draft);free(old);
+      dashboard_text(fd, 422, "Selected USB is not mounted or writable.");
+      return;
+    }
+  }
+  free(draft);
+#endif
   /* Retain one previous version on the same USB. Writes are completed to
    * separate temp files and atomically renamed. Readers never see half a file.
    */
