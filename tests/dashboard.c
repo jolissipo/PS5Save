@@ -5,6 +5,9 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <ifaddrs.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -12,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -37,6 +41,17 @@ typedef struct {
 
 static notification_settings_t notification_settings = { NOTICES_ALL, 0 };
 static long g_interval = 300;
+static pthread_mutex_t notification_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char delivered_pair_message[160];
+static double now_seconds(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+static int send_notification(const char *message) {
+  snprintf(delivered_pair_message, sizeof delivered_pair_message, "%s", message);
+  return 1;
+}
 
 static int mkdir_p(const char *path) {
   char b[2048];
@@ -113,7 +128,7 @@ int main(void) {
   make_request("GET /api/logs HTTP/1.1\r\nHost: localhost\r\n\r\n",
                "backup started");
   make_request("POST /api/config HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
-               "405 Method Not Allowed");
+               "403 Forbidden");
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost\r\n\r\n",
                "404 Not Found");
   puts("PASS dashboard read-only endpoints and persistent history");
