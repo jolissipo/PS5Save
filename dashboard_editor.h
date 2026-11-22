@@ -349,8 +349,8 @@ static int editor_atomic_file(const char *target, const char *suffix,
   return ok;
 }
 
-static void editor_save(int fd, const char *headers,
-                        const char *body, size_t len) {
+static void editor_save_unlocked(int fd, const char *headers,
+                                 const char *body, size_t len) {
   if(!editor_authorized(headers)) {
     dashboard_text(fd, 403, "Pair this browser with the PS5 before editing.");
     return;
@@ -433,6 +433,21 @@ static void editor_save(int fd, const char *headers,
   }
   logq("PS5Save+ dashboard: backup.conf updated (previous saved as backup.conf.bak)");
   dashboard_text(fd, 200, "Configuration saved. Applies on the next backup check.");
+}
+
+static void editor_save(int fd, const char *headers,
+                        const char *body, size_t len) {
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  if(atomic_load(&storage_migrating)) {
+    dashboard_text(fd, 409, "USB transfer in progress; try again.");
+    return;
+  }
+  pthread_mutex_lock(&storage_change_lock);
+#endif
+  editor_save_unlocked(fd, headers, body, len);
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  pthread_mutex_unlock(&storage_change_lock);
+#endif
 }
 
 #endif
