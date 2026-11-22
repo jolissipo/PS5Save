@@ -8,9 +8,12 @@ LDLIBS := -lSceFsInternalForVsh -lSceNotification -lpthread
 
 all: backup.elf
 
-backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change_index.h
+backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change_index.h dashboard.h dashboard/index.html
 	$(CC) $(CFLAGS) main.c $(LDLIBS) -o $@
 
-.PHONY: all clean
+.PHONY: all clean test
+test:
+	sh tests/run-host-tests.sh
+
 clean:
 	rm -f backup.elf
