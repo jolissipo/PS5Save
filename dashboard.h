@@ -55,6 +55,9 @@ typedef struct {
 } dashboard_state_t;
 
 static pthread_mutex_t dashboard_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Serialize backup-cycle transitions with config writes without blocking
+ * the dashboard's read-only status while a backup is active. */
+static pthread_mutex_t dashboard_edit_lock = PTHREAD_MUTEX_INITIALIZER;
 static dashboard_state_t dashboard_state;
 
 /* The kernel may leave the process alive after standby while its old TCP
@@ -70,9 +73,18 @@ static void dashboard_on_continue(int signal_number) {
 }
 
 static void dashboard_set_running(int value) {
+  pthread_mutex_lock(&dashboard_edit_lock);
   pthread_mutex_lock(&dashboard_mutex);
   dashboard_state.running = value;
   pthread_mutex_unlock(&dashboard_mutex);
+  pthread_mutex_unlock(&dashboard_edit_lock);
+}
+
+static int dashboard_backup_running(void) {
+  pthread_mutex_lock(&dashboard_mutex);
+  int running = dashboard_state.running;
+  pthread_mutex_unlock(&dashboard_mutex);
+  return running;
 }
 
 /* Persist only meaningful passes. The backup engine remains functional if
@@ -106,6 +118,7 @@ static void dashboard_history_append(const backup_stats_t *stats, int deferred,
 
 static void dashboard_cycle_done(const backup_stats_t *stats, int deferred,
                                  int snapshot, int errored) {
+  pthread_mutex_lock(&dashboard_edit_lock);
   pthread_mutex_lock(&dashboard_mutex);
   dashboard_state.last_run = time(NULL);
   dashboard_state.bytes = stats->bytes;
@@ -120,6 +133,7 @@ static void dashboard_cycle_done(const backup_stats_t *stats, int deferred,
   dashboard_state.running = 0;
   dashboard_state.has_run = 1;
   pthread_mutex_unlock(&dashboard_mutex);
+  pthread_mutex_unlock(&dashboard_edit_lock);
   dashboard_history_append(stats, deferred, snapshot, errored);
 }
 

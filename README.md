@@ -20,11 +20,11 @@ Backups cover decrypted PS4/PS5 saves, original encrypted save files, trophies a
 ## Get started
 
 1. Connect a writable **exFAT USB drive** with enough space for your saves.
-2. Download **[PS5Save+ v0.1.0-alpha](https://github.com/jolissipo/PS5Save/releases/tag/v0.1.0-alpha)** and load the ELF with a compatible PS5 payload loader.
+2. Download **[PS5Save+ v0.1.1-alpha](https://github.com/jolissipo/PS5Save/releases/tag/v0.1.1-alpha)** and load the ELF with a compatible PS5 payload loader.
 3. Open the **PS5Save+** shortcut on the console, or visit `http://<PS5-IP>:8755/` from your local network.
 4. To change options, select **Settings → Unlock editing on PS5** and enter the six-digit code shown on the console.
 
-Backups start automatically when the payload launches, then run at the configured interval (30 seconds by default). The dashboard is available while the payload is active.
+Backups start automatically when the payload launches, then run at the configured interval (30 seconds by default). The dashboard stays available during backups and USB transfers, while **Settings is temporarily disabled** until the operation finishes.
 
 ## Your backups and settings
 
