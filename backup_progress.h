@@ -22,6 +22,25 @@ static unsigned progress_last;
 static void (*progress_emit)(unsigned percent);
 static int g_progress_planning, g_progress_image;
 
+/* Best-effort idle-sleep inhibition while real copy/verification work occurs.
+ * Same sceSystemServicePowerTick primitive used by mortyzip/KeepAwake.
+ * It does not override HDMI-CEC Power Off Link or a manual standby request.
+ * Progress updates are on the copy thread; never invoke Sony APIs in a signal
+ * handler, and never hold a filesystem or progress mutex while calling them. */
+#ifndef BACKUP_HOST_TEST
+static void progress_keep_awake(void) {
+  static time_t last_tick=-1;
+  struct timespec ts;
+  if(clock_gettime(CLOCK_MONOTONIC,&ts))return;
+  if(last_tick>=0 && ts.tv_sec>=last_tick &&
+     ts.tv_sec-last_tick<10)return;
+  last_tick=ts.tv_sec;
+  (void)sceSystemServicePowerTick();
+}
+#else
+static void progress_keep_awake(void) {}
+#endif
+
 static unsigned
 progress_percent_locked(void) {
   double fraction = progress_target ? (double)progress_bytes / progress_target : 0;
@@ -159,6 +178,7 @@ progress_begin(uint64_t bytes) {
   progress_offset = 0;
   progress_span = 1;
   pthread_mutex_unlock(&progress_mutex);
+  progress_keep_awake();
 }
 
 static void
@@ -169,6 +189,7 @@ progress_advance(uint64_t bytes) {
     progress_bytes += bytes < left ? bytes : left;
   }
   pthread_mutex_unlock(&progress_mutex);
+  progress_keep_awake();
 }
 
 static void
