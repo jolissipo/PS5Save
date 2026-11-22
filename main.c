@@ -361,7 +361,8 @@ notification_json_escape(char *dst, size_t size, const char *src) {
 
 static int
 build_notification_payload(const char *message, const char *created_at,
-                           const char *id, char *payload, size_t size) {
+                           const char *id, const char *bundle_name,
+                           const char *overwrite_type, char *payload, size_t size) {
   size_t capacity = strlen(message) * 6 + 1;
   if(capacity > 2048 * 6 + 1) return 0;
   char *escaped = malloc(capacity);
@@ -374,8 +375,8 @@ build_notification_payload(const char *message, const char *created_at,
     "{\"rawData\":{"
       "\"viewTemplateType\":\"ToastTemplateB\","
       "\"channelType\":\"SystemFeedback\","
-      "\"bundleName\":\"PS5Save+\",\"useCaseId\":\"IDC\","
-      "\"soundEffect\":\"none\",\"toastOverwriteType\":\"No\","
+      "\"bundleName\":\"%s\",\"useCaseId\":\"IDC\","
+      "\"soundEffect\":\"none\",\"toastOverwriteType\":\"%s\","
       "\"isImmediate\":true,\"priority\":100,"
       "\"viewData\":{"
         "\"icon\":{\"type\":\"Url\",\"parameters\":{"
@@ -383,14 +384,15 @@ build_notification_payload(const char *message, const char *created_at,
         "\"message\":{\"body\":\"%s\"},"
         "\"subMessage\":{\"body\":\"PS5Save+ | %s\"}}},"
       "\"createdDateTime\":\"%s\",\"localNotificationId\":\"%s\"}",
-    escaped, PS5SAVE_VERSION, created_at, id);
+    bundle_name, overwrite_type, escaped, PS5SAVE_VERSION, created_at, id);
   free(escaped);
   return n >= 0 && (size_t)n < size;
 }
 
 /** Send an eligible message through libSceNotification, with our icon. */
 static int
-send_notification(const char *message) {
+send_notification_with_policy(const char *message, const char *bundle_name,
+                              const char *overwrite_type) {
   static unsigned serial;
   char *payload;
   char created_at[32];
@@ -418,8 +420,8 @@ send_notification(const char *message) {
   }
   char localized[2048];
   const char *display_text = ps5_localize_notification(message, localized, sizeof localized);
-  if(!build_notification_payload(display_text, created_at, id,
-                                 payload, NOTIFICATION_JSON_SIZE)) {
+  if(!build_notification_payload(display_text, created_at, id, bundle_name,
+                                 overwrite_type, payload, NOTIFICATION_JSON_SIZE)) {
     free(payload);
     logq("Rich notification not sent: payload too large");
     return 0;
@@ -432,6 +434,11 @@ send_notification(const char *message) {
   return rc == 0;
 }
 
+/* Ordinary independent toasts never replace warnings or errors. */
+static int
+send_notification(const char *message) {
+  return send_notification_with_policy(message, "PS5Save+", "No");
+}
 
 static int
 notification_allowed(notice_level_t level) {
@@ -542,9 +549,30 @@ notification_issues_end(void) {
   pthread_mutex_unlock(&notification_mutex);
 }
 
+/* A completed backup is a terminal status, never another throttled progress
+ * update. Both share an isolated ShellUI bundle so "Always" can replace a
+ * visible/queued percentage without touching independent warnings/errors.
+ * This emits immediately after the last copy; no 10-second timer is used.
+ */
+static void
+notify_backup_status(int complete, const char *fmt, ...) {
+  char message[2048];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(message, sizeof message, fmt, ap);
+  va_end(ap);
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(
+        message, "PS5Save+ Backup", complete ? "Always" : "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
+
 static void
 notify_progress(unsigned percent) {
-  notify_info("Backup progress: %u%%", percent);
+  notify_backup_status(0, "Backup progress: %u%%", percent);
 }
 
 #include "backup_progress.h"
@@ -2787,9 +2815,9 @@ run_cycle(int pending_only) {
   } else if(live_work_started) {
     format_size(stats.bytes, size, sizeof size);
     logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
-    notify_info("Backup complete (%s).", size);
+    notify_backup_status(1, "Backup complete (%s).", size);
   } else if(snapshot_result > 0) {
-    notify_info("Daily snapshot complete.");
+    notify_backup_status(1, "Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
     /* No changes is the normal outcome; avoid repetitive popups. */
