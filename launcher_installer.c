@@ -33,7 +33,11 @@
 #define LAUNCHER_MARKER_VALUE "PS5Save+ standalone launcher v1\n"
 #define LAUNCHER_READY LAUNCHER_ROOT "/.ps5save-plus-registered-v3"
 #define LAUNCHER_READY_VALUE "PS5Save+ title registration succeeded v3\n"
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+#define LAUNCHER_LOG storage_installer_log
+#else
 #define LAUNCHER_LOG "/mnt/usb0/ps5save-plus/launcher-installer.log"
+#endif
 #define LAUNCHER_LOG_FALLBACK "/data/ps5save-plus-launcher.log"
 #define LAUNCHER_ICON LAUNCHER_SYS "/icon0.png"
 #define LAUNCHER_PARAM LAUNCHER_SYS "/param.json"
