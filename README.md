@@ -18,7 +18,7 @@ PS5Save+ is a lightweight PS5 save-backup payload with native console notificati
 - A bounded `events.log` records diagnostics to USB; `history.tsv` records meaningful backup passes. Rotation prevents unlimited file growth.
 - No external web service, database, Node.js or other runtime is required for the dashboard.
 
-**Not yet implemented:** the optional PS5 home-screen launcher. PS5 SDK compilation and real-console validation are also pending. The new editor, language selection and recovery notifications have passed host tests but have not been tested in ShellUI.
+**Not yet validated on hardware:** real-console backup operations, automatic language detection, dashboard editing/pairing, standby and the optional home-screen launcher. SDK cross-compilation is now part of CI, but a successful cross-build does not prove runtime compatibility.
 
 ## Installation (development/testing)
 
@@ -31,6 +31,19 @@ PS5Save+ is a lightweight PS5 save-backup payload with native console notificati
 **Security:** the dashboard uses unencrypted HTTP. Read-only information and configuration details are visible to devices on the trusted local network; editing requires a physical-console pairing code, a short-lived in-memory session and matching request origin. Codes are one-use, expire after 2 minutes, and repeated requests/failed attempts are limited. Authorization sessions expire after 1 hour. **Never expose port 8755 to the public internet, route it through a public proxy or use it on an untrusted network.** The physical PS5 must be able to display native notifications to pair. Pairing notifications are explicitly user-triggered even when ordinary backup notifications are disabled.
 
 The server does not automatically open the PS5 browser or install an app icon. The dashboard is optional and is not required for backups to run.
+
+## Optional PS5 home-screen launcher (development only)
+
+A separate `launcher-installer.elf` provides an **opt-in** PS5 home-screen icon that opens `http://127.0.0.1:8755/`.
+
+- Build it with `make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk launcher-installer.elf`.
+- The installer is independent of the backup ELF; it is **never executed automatically**.
+- It uses dedicated title ID `P5SV00001` and writes only its own metadata under `/user/app/P5SV00001`. If that folder exists without the PS5Save+ ownership marker, installation is refused.
+- Registration uses Sony's **title-specific** AppInstUtil entry point. The installer refuses to fall back to a global installation scan, and does not uninstall other titles.
+- The tile opens the browser only; **it does not start the backup payload**. Execute `backup.elf` first.
+- The launcher currently reuses the existing 1024x1024 notification artwork; a distinct PS5Save+ icon can be prepared later.
+
+**Do not execute the installer on a console yet.** The ELF has cross-compiled, but registration and tile persistence have not been validated on PS5 firmware 11.60. Registration changes console application metadata, so it carries more risk than simply opening the dashboard in a browser. There is no one-click uninstall or recovery procedure yet. Keep this component experimental until hardware tests establish safe installation and removal.
 
 ## Configuration
 
@@ -73,9 +86,10 @@ Log and history writes are best-effort. Failure to write diagnostics does not st
 ```sh
 make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
 make test
+make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk launcher-installer.elf
 ```
 
-The build embeds `dashboard/index.html` in the ELF and links the PS5 System Service library to read the console language. Host tests cover backup/notification logic, HTTP endpoints, one-time pairing, unauthorized writes, configuration validation, version conflicts, localisation and recovery. Real save mounts, PS5 ShellUI notifications, browser compatibility, rest mode and actual PS5 SDK linking still require console/build validation.
+The build embeds `dashboard/index.html` in the ELF and links the PS5 System Service library to read the console language. Host tests cover backup/notification logic, HTTP endpoints, one-time pairing, unauthorized writes, configuration validation, version conflicts, localisation and recovery. Cross-compilation is verified with official SDK v0.50 in GitHub Actions; real save mounts, PS5 ShellUI notifications, browser compatibility, rest mode and launcher registration still require physical-console validation.
 
 ## Credits and licence
 
