@@ -40,6 +40,12 @@ static char toasts[LOG_CAPACITY][1024], logs[LOG_CAPACITY][512];
 static double toast_times[LOG_CAPACITY];
 static unsigned sent, logged;
 static int fail_notification_send;
+static int test_console_language = 1;
+int sceSystemServiceParamGetInt(int param_id, int *value) {
+  assert(param_id == 1);
+  *value = test_console_language;
+  return 0;
+}
 static const char *fail_readdir_path;
 static atomic_uint sending, progress_attempts;
 
@@ -392,6 +398,26 @@ wait_for_progress(unsigned count) {
 }
 
 static void
+test_languages(void) {
+  char buffer[2048];
+  const char *original = "Backup complete (12MB).";
+  test_console_language = 7;
+  assert(!strcmp(ps5_localize_notification(original, buffer, sizeof buffer),
+                 "Cópia de segurança concluída (12MB)."));
+  test_console_language = 17;
+  assert(!strcmp(ps5_localize_notification("Backup protection active.", buffer, sizeof buffer),
+                 "Backup ativo."));
+  test_console_language = 3;
+  assert(!strcmp(ps5_localize_notification(original, buffer, sizeof buffer),
+                 "Copia de seguridad completada (12MB)."));
+  test_console_language = 2;
+  assert(!strcmp(ps5_localize_notification(original, buffer, sizeof buffer),
+                 "Sauvegarde terminée (12MB)."));
+  test_console_language = 0; /* Japanese currently falls back to English. */
+  assert(!strcmp(ps5_localize_notification(original, buffer, sizeof buffer), original));
+}
+
+static void
 test_progress(void) {
   unsigned milestone = 0;
   assert(!progress_milestone(24, &milestone));
@@ -479,6 +505,7 @@ main(int argc, char **argv) {
   else if(!strcmp(argv[1], "read-error")) test_read_error();
   else if(!strcmp(argv[1], "snapshot")) test_snapshot();
   else if(!strcmp(argv[1], "progress")) test_progress();
+  else if(!strcmp(argv[1], "language")) test_languages();
   else if(!strcmp(argv[1], "concurrent")) test_concurrent();
   else abort();
 
