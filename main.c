@@ -540,7 +540,7 @@ static void persist_log_line(const char *message) {
   const char *dir = USB_ROOT "/ps5save-plus";
   const char *path = USB_ROOT "/ps5save-plus/events.log";
   const char *old = USB_ROOT "/ps5save-plus/events.log.1";
-  if(!mkdir_p(dir)) {
+  if(!access(CONF_PATH, R_OK) && !mkdir_p(dir)) {
     struct stat st;
     if(!stat(path, &st) && st.st_size >= 256 * 1024) {
       unlink(old);
@@ -2745,7 +2745,7 @@ main(void) {
     return EXIT_FAILURE;
   }
   /* An initial successful pass is the only time we confirm startup. */
-  if(!notification_cycle_failed && !g_backup_busy && !g_cycle_deferred)
+  if(!notification_cycle_failed && !g_backup_busy)
     notify_info("Backup protection active.");
   if(g_daily > 0) {
     /* Log the date and UTC offset the payload sees. */
