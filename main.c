@@ -614,26 +614,7 @@ notify_progress(unsigned percent) {
 #include "backup_progress.h"
 
 #ifndef BACKUP_HOST_TEST
-/* Avoid only automatic idle standby while files are being copied. An
- * explicit rest request (including HDMI-CEC) may still suspend the console.
- * The staged migration recovery path handles that separately. */
-int sceSystemServicePowerTick(void);
 static atomic_int backup_copy_active;
-static void *backup_power_worker(void *arg) {
-  (void)arg;
-  for(;;) {
-    if(atomic_load(&backup_copy_active) || atomic_load(&storage_migrating))
-      (void)sceSystemServicePowerTick();
-    sleep(5);
-  }
-  return NULL;
-}
-static void backup_power_guard_start(void) {
-  pthread_t thread;
-  int rc = pthread_create(&thread, NULL, backup_power_worker, NULL);
-  if(!rc) pthread_detach(thread);
-  else logq("Power guard thread unavailable: %s", strerror(rc));
-}
 #endif
 
 /* Announce the first copy operation, including a snapshot-only pass. */
@@ -789,6 +770,27 @@ mkdir_p(const char *path) {
 
 #ifndef BACKUP_HOST_TEST
 #include "usb_storage.h"
+
+/* Activity-aware idle timer guard; explicit HDMI-CEC standby is not blocked. */
+/* Avoid only automatic idle standby while files are being copied. An
+ * explicit rest request (including HDMI-CEC) may still suspend the console.
+ * The staged migration recovery path handles that separately. */
+int sceSystemServicePowerTick(void);
+static void *backup_power_worker(void *arg) {
+  (void)arg;
+  for(;;) {
+    if(atomic_load(&backup_copy_active) || atomic_load(&storage_migrating))
+      (void)sceSystemServicePowerTick();
+    sleep(5);
+  }
+  return NULL;
+}
+static void backup_power_guard_start(void) {
+  pthread_t thread;
+  int rc = pthread_create(&thread, NULL, backup_power_worker, NULL);
+  if(!rc) pthread_detach(thread);
+  else logq("Power guard thread unavailable: %s", strerror(rc));
+}
 #endif
 
 /* Embed the same default configuration published in the repository: there
