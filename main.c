@@ -124,6 +124,7 @@ along with this program; see the file COPYING. If not, see
 #define BACKUP_ROOT   STORAGE_ROOT "/backup"
 #define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
 #define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
+#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
 #define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
 #define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #define MAX_DAILY     10      /* highest value for daily_snapshots_to_keep= */
@@ -825,7 +826,8 @@ static int storage_prepare(void) {
 
   if(storage_move_legacy(LEGACY_BACKUP_ROOT, BACKUP_ROOT, 1) < 0 ||
      storage_move_legacy(LEGACY_DAILY_ROOT, DAILY_ROOT, 1) < 0 ||
-     storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0)
+     storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0 ||
+     storage_move_legacy(LEGACY_CONF_BAK, CONF_PATH ".bak", 0) < 0)
     return -1;
   return storage_default_config() < 0 ? -1 : 0;
 }
