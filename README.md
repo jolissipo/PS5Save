@@ -13,7 +13,7 @@ PS5Save+ is our fork of [PS5Save](https://github.com/heni0xyz/PS5Save). We creat
 - **Thoughtful notifications:** backup completion and errors, adaptive progress updates for longer backups and USB transfers, transfer start/success/failure alerts, and translated messages for supported console languages.
 - **Web dashboard:** backup status, file explorer, separate live backups and snapshots, storage selection, transfer progress, history and one unified diagnostic log.
 - **USB selection:** automatically preserves existing backups or chooses the writable USB with most free space on a fresh installation. Switch to another mounted USB from the dashboard or `backup.conf`; files are staged and compared byte-for-byte before the source is removed.
-- **Easy settings:** edit `backup.conf` from the browser after authorising the session with a code shown on the PS5.
+- **Easy settings:** edit `backup.conf` after authorising each browser with a code shown on the PS5. Up to eight one-hour sessions remain independent; a pending two-minute code can be resent without extending its validity.
 - **Home-screen shortcut:** automatically installs the PS5Save+ dashboard tile if missing. Subsequent launches do not reinstall it.
 - **One ELF:** no separate launcher, database or web service required.
 
