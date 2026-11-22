@@ -24,9 +24,10 @@
 #include <unistd.h>
 
 #define USB_ROOT TEST_ROOT "/usb"
-#define CONF_PATH USB_ROOT "/backup.conf"
-#define BACKUP_ROOT USB_ROOT "/backup"
-#define DAILY_ROOT USB_ROOT "/backup_daily"
+#define STORAGE_ROOT USB_ROOT "/ps5save-plus"
+#define CONF_PATH STORAGE_ROOT "/backup.conf"
+#define BACKUP_ROOT STORAGE_ROOT "/backup"
+#define DAILY_ROOT STORAGE_ROOT "/backup_daily"
 
 typedef struct backup_stats {
   uint64_t bytes;
