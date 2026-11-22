@@ -122,7 +122,7 @@ static int usb_target_ready(const char *target) {
   return free_bytes > needed;
 }
 
-static int usb_migrate_to(const char *target) {
+static int usb_migrate_to_unlocked(const char *target) {
   if(storage_usb_number(target) < 0 || !strcmp(target, USB_ROOT)) return 0;
   if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
      !usb_target_ready(target)) {
@@ -167,7 +167,9 @@ static int usb_migrate_to(const char *target) {
       int written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
       if(fclose(f)) written = 0;
       if(written && !usb_transfer_tree(source, stage, 0) &&
-         !usb_verify_tree(source, stage, 0)) {
+         !usb_verify_tree(source, stage, 0) &&
+         storage_usb_online(USB_ROOT, NULL, NULL) &&
+         storage_usb_online(target, NULL, NULL)) {
         sync();
         if(!rename(stage, destination)) ok = 1;
       }
@@ -181,6 +183,14 @@ static int usb_migrate_to(const char *target) {
     return -1; /* The marked staging directory is recoverable on next try. */
   }
 
+  /* Both volumes must still be mounted after the staging commit. */
+  if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
+     !storage_usb_online(target, NULL, NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "USB disconnected during transfer. Original preserved.");
+    atomic_store(&storage_migrating, 0);
+    return -1;
+  }
   /* All source data is still present here. Commit the new mount selection. */
   char old_backup[PATH_MAX];
   snprintf(old_backup, sizeof old_backup, "%s", BACKUP_ROOT);
@@ -205,5 +215,11 @@ static int usb_migrate_to(const char *target) {
   logq("Backup storage transferred to %s", USB_ROOT);
   notify_info("Backup storage moved to %s.", USB_ROOT);
   return 0;
+}
+static int usb_migrate_to(const char *target) {
+  pthread_mutex_lock(&storage_change_lock);
+  int result = usb_migrate_to_unlocked(target);
+  pthread_mutex_unlock(&storage_change_lock);
+  return result;
 }
 #endif
