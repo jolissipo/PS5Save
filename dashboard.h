@@ -1,7 +1,6 @@
-/* PS5Save+ lightweight, read-only web dashboard.
- * The web server is advisory: it must never influence backup execution.
- * HTTP endpoints deliberately accept GET only. Configuration writes require a
- * separate authenticated design; do not add unauthenticated POST handlers.
+/* PS5Save+ lightweight web dashboard.
+ * The backup engine remains independent from the HTTP server. Config editing
+ * requires an explicit one-time code displayed on the physical PS5.
  */
 #ifndef PS5SAVE_PLUS_DASHBOARD_H
 #define PS5SAVE_PLUS_DASHBOARD_H
@@ -117,9 +116,14 @@ static void dashboard_respond(int fd, int status, const char *type,
                               const char *body, size_t len) {
   char header[512];
   const char *reason = status == 200 ? "OK" :
+                       status == 400 ? "Bad Request" :
+                       status == 403 ? "Forbidden" :
                        status == 404 ? "Not Found" :
                        status == 405 ? "Method Not Allowed" :
-                       status == 413 ? "Payload Too Large" : "Unavailable";
+                       status == 409 ? "Conflict" :
+                       status == 413 ? "Payload Too Large" :
+                       status == 422 ? "Unprocessable Content" :
+                       status == 429 ? "Too Many Requests" : "Unavailable";
   int n = snprintf(header, sizeof header,
       "HTTP/1.1 %d %s\r\n"
       "Content-Type: %s\r\n"
@@ -140,6 +144,8 @@ static void dashboard_respond(int fd, int status, const char *type,
 static void dashboard_text(int fd, int status, const char *msg) {
   dashboard_respond(fd, status, "text/plain; charset=utf-8", msg, strlen(msg));
 }
+
+#include "dashboard_editor.h"
 
 static void dashboard_serve_status(int fd) {
   dashboard_state_t state;
@@ -316,40 +322,92 @@ static void dashboard_serve_backup_roots(int fd) {
 }
 
 static void dashboard_request(int fd) {
-  char req[DASHBOARD_REQUEST_MAX + 1];
+  /* Headers: 4 KiB maximum. Config body: another 16 KiB maximum.
+   * Reject chunked requests and duplicate Content-Length fields. */
+  char req[DASHBOARD_REQUEST_MAX + EDITOR_CONFIG_MAX + 1];
   size_t len = 0;
+  size_t header_end = 0;
   while(len < DASHBOARD_REQUEST_MAX) {
     ssize_t n = recv(fd, req + len, DASHBOARD_REQUEST_MAX - len, 0);
     if(n < 0 && errno == EINTR) continue;
     if(n <= 0) return;
     len += (size_t)n;
     req[len] = 0;
-    if(strstr(req, "\r\n\r\n")) break;
+    char *boundary = strstr(req, "\r\n\r\n");
+    if(boundary) {
+      header_end = (size_t)(boundary - req) + 4;
+      break;
+    }
   }
-  if(len >= DASHBOARD_REQUEST_MAX && !strstr(req, "\r\n\r\n")) {
-    dashboard_text(fd, 413, "Request too large");
+  if(!header_end || header_end > DASHBOARD_REQUEST_MAX ||
+     memchr(req, 0, header_end)) {
+    dashboard_text(fd, 400, "Invalid HTTP headers.");
     return;
   }
-  char method[8], path[128], version[16];
+  char method[8], path[128], version[16], host[96];
   if(sscanf(req, "%7s %127s %15s", method, path, version) != 3 ||
-     strncmp(version, "HTTP/1.", 7)) {
-    dashboard_text(fd, 404, "Bad request");
+     strncmp(version, "HTTP/1.", 7) ||
+     editor_header(req, "Host", host, sizeof host) != 1 ||
+     !editor_valid_host(host)) {
+    dashboard_text(fd, 400, "Invalid request host or path.");
     return;
   }
-  if(strcmp(method, "GET")) {
-    dashboard_text(fd, 405, "Read-only dashboard");
+  if(!strcmp(method, "GET")) {
+    if(!strcmp(path, "/") || !strcmp(path, "/index.html")) {
+      dashboard_respond(fd, 200, "text/html; charset=utf-8",
+                        (const char *)dashboard_html, dashboard_html_size);
+    } else if(!strcmp(path, "/api/status")) dashboard_serve_status(fd);
+    else if(!strcmp(path, "/api/snapshots")) dashboard_serve_snapshot_list(fd);
+    else if(!strcmp(path, "/api/backups")) dashboard_serve_backup_roots(fd);
+    else if(!strcmp(path, "/api/config")) dashboard_serve_file(fd, CONF_PATH);
+    else if(!strcmp(path, "/api/config-version")) editor_serve_version(fd);
+    else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
+    else if(!strcmp(path, "/api/logs")) dashboard_serve_log_tail(fd);
+    else dashboard_text(fd, 404, "Not found");
     return;
   }
-  if(!strcmp(path, "/") || !strcmp(path, "/index.html")) {
-    dashboard_respond(fd, 200, "text/html; charset=utf-8",
-                      (const char *)dashboard_html, dashboard_html_size);
-  } else if(!strcmp(path, "/api/status")) dashboard_serve_status(fd);
-  else if(!strcmp(path, "/api/snapshots")) dashboard_serve_snapshot_list(fd);
-  else if(!strcmp(path, "/api/backups")) dashboard_serve_backup_roots(fd);
-  else if(!strcmp(path, "/api/config")) dashboard_serve_file(fd, CONF_PATH);
-  else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
-  else if(!strcmp(path, "/api/logs")) dashboard_serve_log_tail(fd);
-  else dashboard_text(fd, 404, "Not found");
+  if(strcmp(method, "POST") ||
+     (strcmp(path, "/api/pair") && strcmp(path, "/api/unlock") &&
+      strcmp(path, "/api/config"))) {
+    dashboard_text(fd, 405, "Method not allowed");
+    return;
+  }
+  if(!editor_request_origin(req)) {
+    dashboard_text(fd, 403, "Rejected request origin or missing authorization header.");
+    return;
+  }
+  char content_length[24];
+  if(editor_header(req, "Content-Length", content_length, sizeof content_length) != 1 ||
+     !editor_integer(content_length, 0, EDITOR_CONFIG_MAX)) {
+    dashboard_text(fd, 400, "Missing or invalid Content-Length.");
+    return;
+  }
+  size_t needed = (size_t)strtoul(content_length, NULL, 10);
+  while(len < header_end + needed) {
+    ssize_t n = recv(fd, req + len, sizeof req - 1 - len, 0);
+    if(n < 0 && errno == EINTR) continue;
+    if(n <= 0) return;
+    len += (size_t)n;
+  }
+  const char *body = req + header_end;
+  if(memchr(body, 0, needed)) {
+    dashboard_text(fd, 400, "NUL bytes are not accepted.");
+    return;
+  }
+  if(!strcmp(path, "/api/pair")) {
+    if(needed) dashboard_text(fd, 400, "Pairing request must be empty.");
+    else editor_start_pair(fd);
+  } else if(!strcmp(path, "/api/unlock")) {
+    char code[7] = "";
+    if(needed != 6) {
+      dashboard_text(fd, 400, "Pairing code must be six digits.");
+      return;
+    }
+    memcpy(code, body, 6);
+    editor_unlock(fd, code, 6);
+  } else if(!strcmp(path, "/api/config")) {
+    editor_save(fd, req, body, needed);
+  }
 }
 
 static void *dashboard_worker(void *arg) {
