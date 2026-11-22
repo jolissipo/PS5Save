@@ -21,7 +21,7 @@
 #define PS5SAVE_USB_TEST 1
 #define STORAGE_USB_PREFIX TEST_ROOT "/usb"
 #define SPACE_MARGIN (1024)
-static char storage_usb_path[32], storage_root_path[PATH_MAX],
+static char storage_usb_path[PATH_MAX], storage_root_path[PATH_MAX],
             storage_conf_path[PATH_MAX], storage_backup_path[PATH_MAX],
             storage_daily_path[PATH_MAX], storage_legacy_conf[PATH_MAX],
             storage_legacy_bak[PATH_MAX], storage_legacy_backup[PATH_MAX],
