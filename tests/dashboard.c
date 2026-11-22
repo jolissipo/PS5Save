@@ -68,6 +68,23 @@ static int mkdir_p(const char *path) {
 }
 
 static void logq(const char *fmt, ...) { (void)fmt; }
+static int notification_json_escape(char *dst, size_t cap, const char *src) {
+  size_t used=0;
+  const char hex[]="0123456789abcdef";
+  for(const unsigned char *p=(const unsigned char*)src; *p; p++) {
+    if(*p<32) {
+      if(cap-used<7) return 0;
+      dst[used++]='\\';dst[used++]='u';dst[used++]='0';dst[used++]='0';
+      dst[used++]=hex[*p>>4];dst[used++]=hex[*p&15];
+    } else {
+      if((*p=='"' || *p=='\\') && cap-used<3) return 0;
+      if(*p=='"' || *p=='\\')dst[used++]='\\';
+      if(cap-used<2)return 0;
+      dst[used++]=(char)*p;
+    }
+  }
+  if(used>=cap)return 0;dst[used]=0;return 1;
+}
 
 #include "../dashboard.h"
 
