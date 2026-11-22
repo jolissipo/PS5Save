@@ -539,6 +539,7 @@ test_layout(void) {
   write_text(LEGACY_BACKUP_ROOT "/example.dat", "old backup");
   write_text(LEGACY_DAILY_ROOT "/2026-11-22/example.dat", "snapshot");
   write_text(LEGACY_CONF_PATH, "backup_interval_seconds=300\nbackup_ps4_saves=false\n");
+  write_text(LEGACY_CONF_BAK, "previous configuration");
   char old_index_name[] = LEGACY_BACKUP_ROOT "/example.dat";
   FILE *idx = fopen(LEGACY_BACKUP_ROOT "/.ps5save-index", "wb");
   assert(idx);
@@ -554,6 +555,8 @@ test_layout(void) {
   assert(!storage_prepare());
   assert(storage_debug_count == 1);
   assert(access(LEGACY_CONF_PATH, F_OK) != 0);
+  assert(access(LEGACY_CONF_BAK, F_OK) != 0);
+  expect_file(CONF_PATH ".bak", "previous configuration");
   assert(access(LEGACY_BACKUP_ROOT, F_OK) != 0);
   assert(access(LEGACY_DAILY_ROOT, F_OK) != 0);
   expect_file(CONF_PATH, "backup_interval_seconds=300\n");
@@ -565,6 +568,12 @@ test_layout(void) {
   index_clear();
   index_load();
   assert(!index_dirty && index_record(BACKUP_ROOT "/example.dat", 0) != NULL);
+
+  /* A previous root-level config must never replace the newly migrated one. */
+  write_text(LEGACY_CONF_PATH, "backup_interval_seconds=900\n");
+  assert(!storage_prepare());
+  expect_file(CONF_PATH, "backup_interval_seconds=300\n");
+  expect_file(LEGACY_CONF_PATH, "backup_interval_seconds=900\n");
 
   /* Ambiguous legacy and new data must not be merged automatically. */
   assert(!mkdir_p(LEGACY_BACKUP_ROOT));
