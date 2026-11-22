@@ -3,6 +3,9 @@
 #ifndef PS5SAVE_USB_STORAGE_H
 #define PS5SAVE_USB_STORAGE_H
 #define STORAGE_USB_SLOTS 8
+#ifndef STORAGE_USB_PREFIX
+#define STORAGE_USB_PREFIX "/mnt/usb"
+#endif
 #define STORAGE_ACTIVE_MARKER ".ps5save-active"
 
 static char storage_requested_usb[32] = "";
@@ -10,9 +13,11 @@ static atomic_int storage_migrating;
 static char storage_move_error[256] = "";
 
 static int storage_usb_number(const char *path) {
-  if(!path || strncmp(path, "/mnt/usb", 8) || path[8] < '0' ||
-     path[8] > '7' || path[9] != '\0') return -1;
-  return path[8] - '0';
+  size_t prefix = strlen(STORAGE_USB_PREFIX);
+  if(!path || strncmp(path, STORAGE_USB_PREFIX, prefix) ||
+     path[prefix] < '0' || path[prefix] > '7' ||
+     path[prefix + 1] != '\0') return -1;
+  return path[prefix] - '0';
 }
 
 static void storage_set_paths(const char *root) {
@@ -87,7 +92,7 @@ static int storage_choose_initial_usb(void) {
   uint64_t best_free = 0;
   for(int i = 0; i < STORAGE_USB_SLOTS; i++) {
     char mount[32];
-    snprintf(mount, sizeof mount, "/mnt/usb%d", i);
+    snprintf(mount, sizeof mount, "%s%d", STORAGE_USB_PREFIX, i);
     uint64_t available = 0;
     if(!storage_usb_online(mount, &available, NULL)) continue;
     int rank = storage_priority(mount);
@@ -98,7 +103,7 @@ static int storage_choose_initial_usb(void) {
   }
   if(selected < 0) return -1;
   char root[32];
-  snprintf(root, sizeof root, "/mnt/usb%d", selected);
+  snprintf(root, sizeof root, "%s%d", STORAGE_USB_PREFIX, selected);
   storage_set_paths(root);
   return 0;
 }
