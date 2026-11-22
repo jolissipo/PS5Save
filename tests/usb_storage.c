@@ -180,7 +180,7 @@ int main(void) {
   snprintf(path, sizeof path, "%s/ps5save-plus/backup", first);
   make_dirs(path);
   snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
-  file_write(path, "backup_usb_device=auto\\n");
+  file_write(path, "backup_usb_device=auto\n");
   snprintf(path, sizeof path, "%s/ps5save-plus/backup/spare.bin", first);
   file_write(path, "other USB saves");
   assert(!storage_choose_initial_usb());
@@ -196,7 +196,7 @@ int main(void) {
   /* An explicit preference in the first USB's own config outranks a marker. */
   snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
   char preferred[PATH_MAX + 64];
-  snprintf(preferred, sizeof preferred, "backup_usb_device=%s\\n", first);
+  snprintf(preferred, sizeof preferred, "backup_usb_device=%s\n", first);
   file_write(path, preferred);
   assert(!storage_choose_initial_usb() && !strcmp(USB_ROOT, first));
   assert(storage_startup_conflict_message(warning, sizeof warning));
