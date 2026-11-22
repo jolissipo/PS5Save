@@ -111,8 +111,13 @@ static int usb_target_ready(const char *target) {
   uint64_t free_bytes;
   if(!storage_usb_online(target, &free_bytes, NULL)) return 0;
   struct stat from, to;
-  if(stat(USB_ROOT, &from) || stat(target, &to) ||
-     from.st_dev == to.st_dev || !S_ISDIR(to.st_mode)) return 0;
+  if(stat(USB_ROOT, &from) || stat(target, &to) || !S_ISDIR(to.st_mode))
+    return 0;
+#ifndef PS5SAVE_USB_TEST
+  /* Real PS5 drives must be distinct filesystems. Host fixtures live on
+   * the same test filesystem and exercise the remaining safety guards. */
+  if(from.st_dev == to.st_dev) return 0;
+#endif
   uint64_t needed = dir_size(STORAGE_ROOT) + SPACE_MARGIN;
   return free_bytes > needed;
 }
