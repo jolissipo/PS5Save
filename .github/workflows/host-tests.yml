@@ -4,6 +4,8 @@ on:
     branches:
       - development/ps5save-plus
   pull_request:
+    branches:
+      - main
     paths:
       - '**.c'
       - '**.h'
