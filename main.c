@@ -95,6 +95,7 @@ along with this program; see the file COPYING. If not, see
 #include <sys/proc.h>
 #include <sys/user.h>
 #include <sys/sysctl.h>
+#include <sys/syscall.h>
 #else
 #include <sys/statfs.h>
 #endif
@@ -173,7 +174,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "dev"
+#define PS5SAVE_RELEASE "v0.1.0-alpha.1"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -2889,6 +2890,12 @@ wait_until(double due, int lock) {
 }
 
 
+/* Reuse the validated standalone tile installer inside the main payload.
+ * Errors remain non-fatal to backups and dashboard access. */
+#ifndef BACKUP_HOST_TEST
+#include "launcher_installer.c"
+#endif
+
 int
 main(void) {
   int missing = 0;
@@ -2903,6 +2910,12 @@ main(void) {
   signal(SIGPIPE, SIG_IGN);
 
   kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
+#ifndef BACKUP_HOST_TEST
+  /* PLDMGR reads the kernel thread/process label. Match its own
+   * SYS_thr_set_name mechanism rather than relying on the ELF filename. */
+  if(syscall(SYS_thr_set_name, -1, "ps5saveplus.elf") < 0)
+    logq("Could not set process label: errno %d", errno);
+#endif
   lock = acquire_lock();
   if(lock < 0) {
     notification_config_on_startup_error();
@@ -2923,6 +2936,10 @@ main(void) {
   }
 
 #ifndef BACKUP_HOST_TEST
+  /* Title registration requires no running web server. Skip silently on later
+   * launches; a first-time failure must not prevent backup operations. */
+  if(ps5save_launcher_install() != 0)
+    logq("Home-screen launcher installation failed; backup service continues.");
   dashboard_start();
 #endif
   /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
