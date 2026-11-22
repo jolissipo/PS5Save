@@ -64,6 +64,12 @@ jobs:
           installer = pathlib.Path("launcher_installer.c").read_text(encoding="utf-8")
           assert '#define LAUNCHER_ID "' + j["titleId"] + '"' in installer, "Installer title ID does not match param.json"
           assert j["localizedParameters"]["en-US"]["titleName"] == "PS5Save+"
+          main = pathlib.Path("main.c").read_text(encoding="utf-8")
+          version = pathlib.Path("VERSION").read_text().strip()
+          assert '#include "launcher_installer.c"' in main
+          assert 'SYS_thr_set_name, -1, "ps5saveplus.elf"' in main
+          assert f'#define PS5SAVE_RELEASE "v{version}"' in main
+          assert re.fullmatch(r"0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+", version)
           PY
           node --check /tmp/ps5save-dashboard.js
 
@@ -86,22 +92,19 @@ jobs:
       - name: Cross-compile PS5Save+ ELF
         run: |
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
-          make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk" launcher-installer.elf
-          # A versioned artifact avoids accidentally executing a stale installer.
-          cp launcher-installer.elf launcher-installer-v4.elf
-          test -s backup.elf
-          test -s launcher-installer-v4.elf
-          file backup.elf launcher-installer-v4.elf
-          readelf -h backup.elf | head -n 28
-          readelf -h launcher-installer-v4.elf | head -n 28
-          echo 'Installer runtime dependencies:'
-          readelf -d launcher-installer-v4.elf | grep NEEDED || true
-      - name: Upload development ELF for inspection (not a release)
+          VERSION="$(tr -d '\\r\\n' < VERSION)"
+          cp ps5saveplus.elf "ps5saveplus_v${VERSION}.elf"
+          test -s ps5saveplus.elf
+          test -s "ps5saveplus_v${VERSION}.elf"
+          file ps5saveplus.elf
+          readelf -h ps5saveplus.elf | head -n 28
+          echo 'Runtime dependencies:'
+          readelf -d ps5saveplus.elf | grep NEEDED || true
+          sha256sum "ps5saveplus_v${VERSION}.elf"
+      - name: Upload development ELF for inspection
         uses: actions/upload-artifact@v4
         with:
-          name: ps5save-plus-development-elf
-          path: |
-            backup.elf
-            launcher-installer-v4.elf
+          name: ps5saveplus-alpha-candidate
+          path: ps5saveplus_v*.elf
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 7
