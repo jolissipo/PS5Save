@@ -141,7 +141,7 @@ static void test_config_editor(void) {
            (unsigned long long)editor_hash(original, strlen(original)));
   make_request("GET /api/config-version HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                version);
-  const char *bad = "backup_interval_seconds=60\n/mnt/usb0/backup\n";
+  const char *bad = "backup_interval_seconds=60\n" USB_ROOT "/backup\n";
   n = snprintf(req, sizeof req,
     "POST /api/config HTTP/1.1\r\n"
     "Host: localhost:8755\r\n"
