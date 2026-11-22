@@ -278,8 +278,8 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
         text("treeSummary","Calculating file inventory…");
         request(backupQuery("/api/summary")).then(function(r){return r.json();}).then(function(data){
           if(version!==explorer.version)return;
-          var description=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
-          if(!data.complete)description+=" · Partial scan (time or file limit reached)";
+          var description="Entire backup: "+data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
+          if(!data.complete)description+=" · Partial inventory (limit or unreadable entry)";
           else description+=" · Filesystem inventory";
           text("treeSummary",description);
         }).catch(function(){if(version===explorer.version)text("treeSummary","Summary unavailable; you can still browse the file tree.");});
