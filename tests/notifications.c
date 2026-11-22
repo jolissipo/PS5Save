@@ -100,7 +100,7 @@ sceNotificationSend(int user_id, bool is_logged, const char *payload) {
   assert(atomic_fetch_add(&sending, 1) == 0);
   assert(user_id == NOTIFICATION_USER_ID && is_logged);
   assert(strstr(payload, NOTIFICATION_ICON_PATH));
-  assert(strstr(payload, "\"bundleName\":\"PS5Save\""));
+  assert(strstr(payload, "\"bundleName\":\"PS5Save+\""));
   assert(strstr(payload, "\"localNotificationId\":\"ps5save-"));
   if(fail_notification_send) {
     assert(atomic_fetch_sub(&sending, 1) == 1);
@@ -172,15 +172,11 @@ test_legacy(void) {
   cycle_with_config("  interval = 120 \r\n  max_game_mb = 64 \n"
                     "dailybackups=0\nps4saves=false\nps5saves=false\n" SOURCE "\n");
   assert(g_interval == 120 && g_max_game == 64 * BYTES_PER_MB);
-  assert(toast_count(NULL) == 3);
-  expect_toast(0, CHECKING);
-  expect_toast(1, COPYING);
-  expect_toast(2, "Backup complete");
+  assert(toast_count(NULL) == 1);
+  expect_toast(0, "Backup complete");
   expect_file(BACKUP_ROOT SOURCE, "original");
   assert(run_cycle(0) == 0);
-  assert(toast_count(NULL) == 5);
-  expect_toast(3, CHECKING);
-  expect_toast(4, NO_CHANGES);
+  assert(toast_count(NULL) == 1); /* No-change passes stay silent. */
 }
 
 static void
@@ -190,7 +186,7 @@ test_settings(void) {
                     "backup_progress_interval_seconds=retired-value\n");
   assert(log_contains("Invalid backup_notifications") && log_contains("Invalid boolean"));
   assert(!log_contains("retired-value"));
-  assert(notification_settings.mode == NOTICES_ALL && notification_settings.in_game);
+  assert(notification_settings.mode == NOTICES_ALL && !notification_settings.in_game);
   cycle_with_config(" backup_notifications = errors \t\r\n"
                     " backup_notifications_in_game = false \n"
                     "backup_notifications_in_game=invalid\n");
@@ -201,7 +197,7 @@ test_settings(void) {
   notify_info("Must stay muted");
   assert(toast_count(NULL) == before);
   cycle_with_config("");
-  assert(notification_settings.mode == NOTICES_ALL && notification_settings.in_game);
+  assert(notification_settings.mode == NOTICES_ALL && !notification_settings.in_game);
   assert(notification_allowed(NOTICE_INFO));
 }
 
@@ -239,7 +235,7 @@ test_errors(void) {
 
   cycle_with_config(SOURCE "\nbackup_notifications=all\n");
   cycle_with_config(OVERSIZED "\nbackup_notifications=all\n");
-  assert(toast_count(CHECKING) == 2 && !toast_count(NO_CHANGES));
+  assert(!toast_count(CHECKING) && !toast_count(NO_CHANGES));
 }
 
 static void
@@ -301,7 +297,7 @@ test_protection(void) {
   assert(pending_find("1", title, 1));
   assert(!toast_count(NULL) && activity.count == 1);
   cycle_with_config("backup_ps5_saves=true\nbackup_notifications_in_game=true\n");
-  assert(toast_count(CHECKING) == 1 && !toast_count(NO_CHANGES));
+  assert(!toast_count(CHECKING) && !toast_count(NO_CHANGES));
   double checked = activity.checked;
 
   write_text(ACTIVITY_PATH, "");
@@ -314,12 +310,11 @@ static void
 test_empty(void) {
   assert(!mkdir_p(EMPTY) && !mkdir_p(NESTED "/subdir"));
   cycle_with_config(EMPTY "\n" NESTED "/\nbackup_notifications=all\n");
-  assert(toast_count("No files to back up in empty.") == 1);
-  assert(toast_count("No files to back up in nested.") == 1);
+  assert(!toast_count("No files to back up in") && log_contains("No files to back up"));
   assert(!toast_count(NO_CHANGES) && !toast_count(COPYING));
 
   assert(run_cycle(0) == 0);
-  assert(toast_count("No files to back up in") == 2 && !toast_count(NO_CHANGES));
+  assert(!toast_count("No files to back up in") && !toast_count(NO_CHANGES));
 
   write_text(EMPTY "/save", "save in previously empty folder");
   write_text(NESTED "/subdir/save", "save in nested folder");
@@ -328,12 +323,11 @@ test_empty(void) {
   expect_file(BACKUP_ROOT NESTED "/subdir/save", "save in nested folder");
 
   assert(run_cycle(0) == 0);
-  assert(toast_count(NO_CHANGES) == 1 && toast_count("No files to back up in") == 2);
+  assert(!toast_count(NO_CHANGES) && toast_count("Backup complete") == 1);
 
   assert(!unlink(EMPTY "/save"));
   assert(run_cycle(0) == 0);
-  assert(toast_count("No files to back up in empty.") == 2);
-  assert(toast_count(NO_CHANGES) == 1);
+  assert(!toast_count("No files to back up in") && !toast_count(NO_CHANGES));
   expect_file(BACKUP_ROOT EMPTY "/save", "save in previously empty folder");
 }
 
@@ -369,10 +363,8 @@ test_snapshot(void) {
   expect_file(BACKUP_ROOT SOURCE, "snapshot version");
   fail_readdir_path = NULL;
   cycle_with_config(SOURCE "\ndaily_snapshots_to_keep=2\nbackup_notifications=all\n");
-  assert(toast_count(NULL) == 4);
-  expect_toast(1, CHECKING);
-  expect_toast(2, "Creating daily snapshot.");
-  expect_toast(3, "Daily snapshot complete.");
+  assert(toast_count(NULL) == 2);
+  expect_toast(1, "Daily snapshot complete.");
   assert(!toast_count(NO_CHANGES) && !toast_count(COPYING));
   expect_file(saved_file, "snapshot version");
 
@@ -380,7 +372,7 @@ test_snapshot(void) {
   cycle_with_config(config);
   expect_file(BACKUP_ROOT SOURCE, "new live version");
   expect_file(saved_file, "snapshot version");
-  assert(toast_count(NULL) == 4 && log_contains("created"));
+  assert(toast_count(NULL) == 2 && log_contains("created"));
 }
 
 static void
