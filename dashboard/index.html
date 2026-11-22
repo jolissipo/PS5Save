@@ -71,7 +71,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <div class="wrap">
 <header>
  <div class="brand"><div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor" focusable="false"><path d="M8.984 2.596v17.547l3.915 1.261V6.688c0-.69.304-1.151.794-.991.636.18.76.814.76 1.505v5.875c2.441 1.193 4.362-.002 4.362-3.152 0-3.237-1.126-4.675-4.438-5.827-1.307-.448-3.728-1.186-5.39-1.502zm4.656 16.241l6.296-2.275c.715-.258.826-.625.246-.818-.586-.192-1.637-.139-2.357.123l-4.205 1.5V14.98l.24-.085s1.201-.42 2.913-.615c1.696-.18 3.785.03 5.437.661 1.848.601 2.04 1.472 1.576 2.072-.465.6-1.622 1.036-1.622 1.036l-8.544 3.107V18.86zM1.807 18.6c-1.9-.545-2.214-1.668-1.352-2.32.801-.586 2.16-1.052 2.16-1.052l5.615-2.013v2.313L4.205 17c-.705.271-.825.632-.239.826.586.195 1.637.15 2.343-.12L8.247 17v2.074c-.12.03-.256.044-.39.073-1.939.331-3.996.196-6.038-.479z"/></svg></div>
- <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.6</p></div></div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.7</p></div></div>
  <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
 </header>
 <nav aria-label="Dashboard sections">
@@ -367,6 +367,24 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     });
   });
   var sessionToken="",configSource="",configVersion="";
+  function setEditingState(enabled){
+    var button=byId("requestPair");
+    button.disabled=enabled;
+    button.textContent=enabled?"Editing already enabled":"Unlock editing on PS5";
+    byId("pairForm").hidden=enabled;
+    byId("settingsForm").hidden=!enabled;
+    byId("advanced").hidden=!enabled;
+  }
+  function verifyEditorSession(){
+    if(!sessionToken)return;
+    var checked=sessionToken;
+    post("/api/session","",{"X-PS5Save-Session":checked}).catch(function(){
+      if(sessionToken!==checked)return; /* A newer local pairing won this race. */
+      sessionToken="";
+      setEditingState(false);
+      text("pairMessage","Editing session expired. Unlock editing on PS5 again.");
+    });
+  }
   var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
   var keys=["backup_usb_device","backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
   /* Parse existing backup.conf settings without losing numeric key names.
@@ -443,20 +461,36 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     text(outputId,"Saving…");
     post("/api/config",newValue,{"X-PS5Save-Session":sessionToken,"X-PS5Save-Version":configVersion})
       .then(function(message){text(outputId,message);configuration();})
-      .catch(function(error){text(outputId,error.message);if(/changed elsewhere/i.test(error.message))configuration();});
+      .catch(function(error){
+        text(outputId,error.message);
+        if(/changed elsewhere/i.test(error.message))configuration();
+        if(/Pair this browser with the PS5/i.test(error.message)){
+          sessionToken="";setEditingState(false);
+          text("pairMessage","Editing session expired. Unlock editing on PS5 again.");
+        }
+      });
   }
   byId("requestPair").addEventListener("click",function(){
+    if(sessionToken){
+      text("pairMessage","Editing already enabled in this browser.");
+      return;
+    }
+    var button=byId("requestPair");
+    button.disabled=true; /* Prevent overlapping pairing requests in this page. */
     text("pairMessage","Requesting code…");
     post("/api/pair","").then(function(message){
+      button.disabled=false;
       text("pairMessage",message);byId("pairForm").hidden=false;byId("pairCode").focus();
-    }).catch(function(error){text("pairMessage",error.message);});
+    }).catch(function(error){button.disabled=false;text("pairMessage",error.message);});
   });
   byId("pairForm").addEventListener("submit",function(event){
     event.preventDefault();
     post("/api/unlock",byId("pairCode").value).then(function(token){
       if(!/^[0-9a-f]{32}$/.test(token))throw Error("Unexpected authorization response");
-      sessionToken=token;byId("pairForm").hidden=true;byId("settingsForm").hidden=false;byId("advanced").hidden=false;
-      text("pairMessage","Editing enabled for this session.");configuration();
+      sessionToken=token;
+      setEditingState(true);
+      byId("pairCode").value="";
+      text("pairMessage","Editing enabled in this browser.");configuration();
     }).catch(function(error){text("pairMessage",error.message);});
   });
   byId("preferences").addEventListener("submit",function(event){
@@ -486,7 +520,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(b){b.setAttribute("aria-pressed",b===button?"true":"false");});
       Array.prototype.forEach.call(document.querySelectorAll(".tab"),function(el){el.hidden=el.id!==selected;});
       if(selected==="backups"){openBrowser("live","","");snapshotList();}
-      if(selected==="settings")configuration();
+      if(selected==="settings"){configuration();verifyEditorSession();}
     });
   });
   byId("viewLogs").addEventListener("click",function(){
@@ -496,6 +530,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   status();history();
   setInterval(status,12000);
   setInterval(history,60000);
+  setInterval(verifyEditorSession,60000);
 })();
 </script>
 </body>
