@@ -6,7 +6,7 @@
  * Unlike those installers, this intentionally does NOT fall back to the
  * global AppInstallAll scan, nor does it uninstall other applications.
  *
- * It creates only /user/app/P5SV00001 and registers that single title.
+ * It creates only /user/app/PSSV00001 and registers that single title.
  * It refuses to overwrite any pre-existing, unmarked title directory.
  * The launcher opens http://127.0.0.1:8755/; it does not start the daemon.
  */
@@ -26,7 +26,7 @@
 
 #include "notification_icon.h"
 
-#define LAUNCHER_ID "P5SV00001"
+#define LAUNCHER_ID "PSSV00001"
 #define LAUNCHER_ROOT "/user/app/" LAUNCHER_ID
 #define LAUNCHER_SYS LAUNCHER_ROOT "/sce_sys"
 #define LAUNCHER_MARKER LAUNCHER_ROOT "/.ps5save-plus-launcher"
@@ -262,7 +262,7 @@ int main(void) {
   rc = sceAppInstUtilAppInstallTitleDir(LAUNCHER_ID, "/user/app/", NULL);
   int terminate_rc = sceAppInstUtilTerminate();
   if(rc) {
-    launcher_debug("ERRO: registo P5SV00001 falhou: 0x%08X.", (unsigned)rc);
+    launcher_debug("ERRO: registo PSSV00001 falhou: 0x%08X.", (unsigned)rc);
     return 1;
   }
   if(terminate_rc)
