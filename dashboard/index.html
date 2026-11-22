@@ -43,6 +43,13 @@ h3{font-size:14px;margin:0 0 12px;color:#dce5f4}
 .status-good{color:#a4efc5}
 .status-error{color:#ffc0b8}
 .status-warn{color:#ffe2a3}
+label.field{display:block;margin:13px 0;font-size:13px;color:#c6d3e7}
+label.field select,label.field input{display:block;width:100%;max-width:360px;margin-top:7px;padding:10px;border-radius:8px;border:1px solid #587094;background:#101b2b;color:#f2f6ff;font:inherit}
+label.field input[type="checkbox"]{display:inline-block;width:auto;margin:0 9px 0 0}
+textarea{box-sizing:border-box;width:100%;height:240px;padding:13px;margin-top:12px;border:1px solid #587094;border-radius:9px;background:#101b2b;color:#eff4fa;font:13px/1.6 Consolas,monospace}
+select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #9cc3ff;outline-offset:2px}
+button[disabled]{opacity:.5;cursor:not-allowed}
+.message{margin-top:12px;color:#b4d3fc;min-height:20px}
 pre{padding:14px;border-radius:9px;overflow:auto;background:#121b29;border:1px solid #344359;color:#dfe7f6;max-height:420px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.65 Consolas,monospace}
 [hidden]{display:none!important}
 footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
@@ -81,9 +88,44 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <ul id="backupRoots" class="list"><li class="muted">Checking…</li></ul></div>
 </section>
 <section id="settings" class="tab" hidden>
- <div class="panel"><h2>Current configuration</h2>
- <p class="muted small">Read-only preview of backup.conf. Editing from a browser is deliberately disabled until authenticated configuration changes are implemented and tested.</p>
- <pre id="config">Loading backup.conf…</pre></div>
+ <div class="panel"><h2>Settings</h2>
+ <p class="muted small">You can always read your configuration. To make changes, enter a temporary pairing code displayed in a PS5 notification. Editing is only available on a trusted local network.</p>
+ <button class="secondary-button" id="requestPair" type="button">Unlock editing on PS5</button>
+ <form id="pairForm" hidden>
+  <label class="field">6-digit code from your PS5
+  <input id="pairCode" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+  <button class="secondary-button" type="submit">Confirm pairing</button>
+ </form>
+ <p id="pairMessage" role="status" class="message small"></p></div>
+ <div class="panel" id="settingsForm" hidden><h2>Backup preferences</h2>
+ <form id="preferences">
+  <label class="field">Check every
+   <select name="backup_interval_seconds"><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
+  <label class="field">Notifications
+   <select name="backup_notifications"><option value="all">All useful notifications</option><option value="errors">Warnings and errors only</option><option value="off">Off</option></select></label>
+  <label class="field"><input type="checkbox" name="backup_notifications_in_game">Show notifications during games</label>
+  <label class="field"><input type="checkbox" name="backup_ps4_saves">Decrypted PS4 saves</label>
+  <label class="field"><input type="checkbox" name="backup_ps5_saves">Decrypted PS5 saves</label>
+  <label class="field"><input type="checkbox" name="backup_encrypted_saves">Original encrypted saves</label>
+  <label class="field"><input type="checkbox" name="backup_ps4_trophies">PS4 trophies</label>
+  <label class="field"><input type="checkbox" name="backup_ps5_trophies">PS5 trophies</label>
+  <label class="field">Daily snapshots to retain
+   <select name="daily_snapshots_to_keep"><option value="0">Off</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="10">10</option></select></label>
+  <label class="field">Maximum save-image size per title (MB)
+   <input type="number" name="max_title_size_mb" min="64" max="65536" step="1"></label>
+  <button class="secondary-button" type="submit">Save preferences</button>
+ </form>
+ <p class="small muted">Other settings and custom source paths are preserved exactly as written.</p>
+ <p id="saveMessage" role="status" class="message small"></p>
+ </div>
+ <div class="panel"><h2>backup.conf</h2>
+ <p class="muted small">Current file on USB. Advanced editing of custom emulator paths is available after pairing.</p>
+ <pre id="config">Loading backup.conf…</pre>
+ <details id="advanced" hidden><summary>Advanced: edit backup.conf directly</summary>
+ <textarea id="rawConfig" spellcheck="false" aria-label="Advanced backup.conf editor"></textarea>
+ <button id="saveRaw" class="secondary-button" type="button">Save entire configuration</button>
+ <p class="small muted">Invalid paths or settings will be rejected. The previous file is preserved as backup.conf.bak.</p></details>
+ </div>
 </section>
 </main>
 <footer>
@@ -143,10 +185,84 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       entries.forEach(function(item){line(id,item);});
     }).catch(function(){byId(id).textContent="";line(id,"Unavailable");});
   }
+  var sessionToken="",configSource="",configVersion="";
+  var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
+  var keys=["backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
   function configuration(){
-    request("/api/config").then(function(r){return r.text();}).then(function(s){text("config",s);})
-      .catch(function(){text("config","backup.conf is not available.");});
+    Promise.all([request("/api/config").then(function(r){return r.text();}),
+                 request("/api/config-version").then(function(r){return r.text();})])
+    .then(function(v){
+      configSource=v[0];configVersion=v[1].trim();text("config",configSource);
+      byId("rawConfig").value=configSource;
+      var values={};
+      configSource.split(/\\r?\\n/).forEach(function(line){
+        var match=line.match(/^\\s*([a-z_]+)\\s*=\\s*(.*?)\\s*$/);
+        if(match)values[match[1]]=match[2];
+      });
+      var form=byId("preferences");
+      keys.forEach(function(key){
+        var el=form.elements.namedItem(key);if(!el)return;
+        var value=values[key];
+        if(typeof value==="undefined")return;
+        if(boolKeys.indexOf(key)!==-1)el.checked=value==="true";
+        else if(el.tagName==="SELECT"&&!Array.prototype.some.call(el.options,function(o){return o.value===value;})){
+          var opt=document.createElement("option");opt.value=value;opt.textContent=value+" (custom)";el.appendChild(opt);el.value=value;
+        } else el.value=value;
+      });
+    }).catch(function(){text("config","backup.conf is not available.");});
   }
+  function post(path,body,extra){
+    var headers={"X-PS5Save-Request":"1","Content-Type":"text/plain; charset=utf-8"};
+    if(extra)Object.keys(extra).forEach(function(k){headers[k]=extra[k];});
+    return fetch(path,{method:"POST",headers:headers,body:body}).then(function(r){
+      return r.text().then(function(s){if(!r.ok)throw Error(s||("HTTP "+r.status));return s;});
+    });
+  }
+  function replaceKey(original,key,value){
+    var rows=original.split("\\n"),seen=false;
+    rows=rows.map(function(line){
+      var match=line.match(new RegExp("^(\\\\s*"+key+"\\\\s*=\\\\s*)([^\\\\r\\\\n]*)$"));
+      if(match){seen=true;return match[1]+value;}
+      return line;
+    });
+    if(!seen){if(rows.length&&rows[rows.length-1].trim())rows.push("");rows.push(key+"="+value);}
+    return rows.join("\\n");
+  }
+  function saveConfiguration(newValue,outputId){
+    text(outputId,"Saving…");
+    post("/api/config",newValue,{"X-PS5Save-Session":sessionToken,"X-PS5Save-Version":configVersion})
+      .then(function(message){text(outputId,message);configuration();})
+      .catch(function(error){text(outputId,error.message);if(/changed elsewhere/i.test(error.message))configuration();});
+  }
+  byId("requestPair").addEventListener("click",function(){
+    text("pairMessage","Requesting code…");
+    post("/api/pair","").then(function(message){
+      text("pairMessage",message);byId("pairForm").hidden=false;byId("pairCode").focus();
+    }).catch(function(error){text("pairMessage",error.message);});
+  });
+  byId("pairForm").addEventListener("submit",function(event){
+    event.preventDefault();
+    post("/api/unlock",byId("pairCode").value).then(function(token){
+      if(!/^[0-9a-f]{32}$/.test(token))throw Error("Unexpected authorization response");
+      sessionToken=token;byId("pairForm").hidden=true;byId("settingsForm").hidden=false;byId("advanced").hidden=false;
+      text("pairMessage","Editing enabled for this session.");configuration();
+    }).catch(function(error){text("pairMessage",error.message);});
+  });
+  byId("preferences").addEventListener("submit",function(event){
+    event.preventDefault();
+    if(!sessionToken||!configVersion)return;
+    var form=byId("preferences"),result=configSource;
+    keys.forEach(function(key){
+      var el=form.elements.namedItem(key);if(!el)return;
+      var value=boolKeys.indexOf(key)!==-1?(el.checked?"true":"false"):el.value;
+      result=replaceKey(result,key,value);
+    });
+    saveConfiguration(result,"saveMessage");
+  });
+  byId("saveRaw").addEventListener("click",function(){
+    if(!sessionToken||!configVersion)return;
+    saveConfiguration(byId("rawConfig").value,"saveMessage");
+  });
   Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(button){
     button.addEventListener("click",function(){
       var selected=button.getAttribute("data-tab");
