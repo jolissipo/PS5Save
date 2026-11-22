@@ -153,6 +153,51 @@ static void dashboard_text(int fd, int status, const char *msg) {
 
 #include "dashboard_editor.h"
 
+static void dashboard_usb_list(int fd) {
+  char output[2000];
+  size_t used = 0;
+  int n = snprintf(output, sizeof output,
+    "{\"current\":\"%s\",\"moving\":%s,\"drives\":[",
+    USB_ROOT,
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+    atomic_load(&storage_migrating) ? "true" : "false"
+#else
+    "false"
+#endif
+  );
+  if(n < 0 || (size_t)n >= sizeof output) {
+    dashboard_text(fd, 503, "USB information unavailable");
+    return;
+  }
+  used = (size_t)n;
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  unsigned count = 0;
+  for(int i = 0; i < STORAGE_USB_SLOTS; i++) {
+    char mount[32];
+    uint64_t free_bytes, total_bytes;
+    snprintf(mount, sizeof mount, "/mnt/usb%d", i);
+    if(!storage_usb_online(mount, &free_bytes, &total_bytes)) continue;
+    n = snprintf(output + used, sizeof output - used,
+       "%s{\"path\":\"%s\",\"free\":%llu,\"total\":%llu}",
+       count++ ? "," : "", mount, (unsigned long long)free_bytes,
+       (unsigned long long)total_bytes);
+    if(n < 0 || (size_t)n >= sizeof output - used) {
+      dashboard_text(fd, 503, "Too many USB drives"); return;
+    }
+    used += (size_t)n;
+  }
+#else
+  int count = snprintf(output + used, sizeof output - used,
+        "{\"path\":\"%s\",\"free\":0,\"total\":0}", USB_ROOT);
+  if(count < 0 || (size_t)count >= sizeof output - used) return;
+  used += (size_t)count;
+#endif
+  n = snprintf(output + used, sizeof output - used, "]}");
+  if(n < 0 || (size_t)n >= sizeof output - used) return;
+  used += (size_t)n;
+  dashboard_respond(fd, 200, "application/json; charset=utf-8", output, used);
+}
+
 static void dashboard_serve_status(int fd) {
   dashboard_state_t state;
   struct statfs sf;
@@ -173,7 +218,8 @@ static void dashboard_serve_status(int fd) {
       "\"skipped\":%u,\"deferred\":%s,\"snapshot\":%d,"
       "\"interval\":%ld,\"notifications\":%d,"
       "\"inGame\":%s,\"usbOnline\":%s,"
-      "\"usbFree\":%llu,\"usbTotal\":%llu}",
+      "\"usbFree\":%llu,\"usbTotal\":%llu,"
+      "\"usbDevice\":\"%s\",\"usbMoving\":%s}",
       state.running ? "true" : "false",
       state.has_run ? "true" : "false",
       (long long)state.last_run,
@@ -182,7 +228,14 @@ static void dashboard_serve_status(int fd) {
       state.deferred ? "true" : "false", state.snapshot,
       state.interval, state.notification_mode,
       state.notification_in_game ? "true" : "false",
-      usb_online ? "true" : "false", free_bytes, total_bytes);
+      usb_online ? "true" : "false", free_bytes, total_bytes,
+      USB_ROOT,
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+      atomic_load(&storage_migrating) ? "true" : "false"
+#else
+      "false"
+#endif
+  );
   if(n < 0 || (size_t)n >= sizeof buf) {
     dashboard_text(fd, 503, "Status unavailable");
     return;
@@ -383,6 +436,7 @@ static void dashboard_request(int fd) {
       dashboard_respond(fd, 200, "text/html; charset=utf-8",
                         (const char *)dashboard_html, dashboard_html_size);
     } else if(!strcmp(path, "/api/status")) dashboard_serve_status(fd);
+    else if(!strcmp(path, "/api/usb-devices")) dashboard_usb_list(fd);
     else if(!strcmp(path, "/api/snapshots")) dashboard_serve_snapshot_list(fd);
     else if(!strcmp(path, "/api/backups")) dashboard_serve_backup_roots(fd);
     else if(!strcmp(path, "/api/tree")) browser_serve_tree(fd, query);
