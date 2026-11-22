@@ -613,12 +613,37 @@ notify_progress(unsigned percent) {
 
 #include "backup_progress.h"
 
+#ifndef BACKUP_HOST_TEST
+/* Avoid only automatic idle standby while files are being copied. An
+ * explicit rest request (including HDMI-CEC) may still suspend the console.
+ * The staged migration recovery path handles that separately. */
+int sceSystemServicePowerTick(void);
+static atomic_int backup_copy_active;
+static void *backup_power_worker(void *arg) {
+  (void)arg;
+  for(;;) {
+    if(atomic_load(&backup_copy_active) || atomic_load(&storage_migrating))
+      (void)sceSystemServicePowerTick();
+    sleep(5);
+  }
+  return NULL;
+}
+static void backup_power_guard_start(void) {
+  pthread_t thread;
+  int rc = pthread_create(&thread, NULL, backup_power_worker, NULL);
+  if(!rc) pthread_detach(thread);
+  else logq("Power guard thread unavailable: %s", strerror(rc));
+}
+#endif
 
 /* Announce the first copy operation, including a snapshot-only pass. */
 static void
 backup_activity_begin(const char *message) {
   if(!g_backup_busy) {
     g_backup_busy = 1;
+#ifndef BACKUP_HOST_TEST
+    atomic_store(&backup_copy_active, 1);
+#endif
     (void)message; /* Normal start is intentionally silent. */
     if(notification_allowed(NOTICE_INFO))
       progress_start(notify_progress);
@@ -2898,6 +2923,9 @@ run_cycle(int pending_only) {
   index_save();
   int snapshot_result = g_pending_only ? 0 : daily_check();
   progress_stop();
+#ifndef BACKUP_HOST_TEST
+  atomic_store(&backup_copy_active, 0);
+#endif
   if(!pending_only && !g_cycle_deferred && !g_mount_stuck && !config_read_failed)
     notification_issues_end();
 #ifndef BACKUP_HOST_TEST
@@ -3092,6 +3120,7 @@ main(void) {
   if(ps5save_launcher_install() != 0)
     logq("Home-screen launcher installation failed; backup service continues.");
   dashboard_start();
+  backup_power_guard_start();
 #endif
   /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
   started = now_seconds();
