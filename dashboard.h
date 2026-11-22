@@ -4,6 +4,7 @@
  */
 #ifndef PS5SAVE_PLUS_DASHBOARD_H
 #define PS5SAVE_PLUS_DASHBOARD_H
+#include <signal.h>
 #ifndef BACKUP_HOST_TEST
 
 #ifndef DASHBOARD_PORT
