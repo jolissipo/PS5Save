@@ -93,23 +93,31 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Show recent log entries</button><pre id="logs" hidden></pre></div>
 </section>
 <section id="backups" class="tab" hidden>
- <div class="panel">
-  <div class="panel-head"><h2>Live backup</h2><button class="secondary-button" id="browseLive" type="button">Browse files</button></div>
-  <p class="small muted">The latest saved files. Browse folders, sizes and modification dates; no files are changed.</p>
+ <div class="panel" id="liveBackupPanel">
+  <h2>Live backup</h2>
+  <p class="small muted">Current backup on your USB. Open any folder below to inspect its saved files.</p>
+  <p id="liveSummary" class="small muted">Loading backup inventory…</p>
+  <div id="liveTrail" class="crumbs" aria-label="Live backup directory path"></div>
+  <div id="liveItems" aria-live="polite"></div>
+  <button class="secondary-button" id="liveMore" type="button" hidden>Show more files</button>
  </div>
- <div class="panel">
+ <div class="panel" id="snapshotBackupPanel">
   <h2>Daily snapshots</h2>
-  <p class="small muted">Dated copies of the live backup at the moment each snapshot was created. Choose a date to inspect its contents.</p>
-  <div id="snapshots" aria-live="polite"><p class="muted">Loading snapshots…</p></div>
+  <p class="small muted">Previous versions preserved on the selected date. Browse them below without changing the current backup.</p>
+  <label class="field" for="snapshotPicker">Snapshot date
+    <select id="snapshotPicker" aria-label="Choose a daily snapshot">
+      <option value="">Loading snapshots…</option>
+    </select>
+  </label>
+  <div id="snapshotContent" hidden>
+    <p id="snapshotSummary" class="small muted">Select a snapshot to inspect its contents.</p>
+    <div id="snapshotTrail" class="crumbs" aria-label="Snapshot directory path"></div>
+    <div id="snapshotItems" aria-live="polite"></div>
+    <button class="secondary-button" id="snapshotMore" type="button" hidden>Show more files</button>
+  </div>
+  <p class="small muted">Each snapshot reflects the live backup at creation time, not later changes.</p>
  </div>
- <div class="panel">
-  <h2 id="treeHeading">Backup contents</h2>
-  <div id="treeSummary" class="small muted">Select the live backup or a daily snapshot to inspect its files.</div>
-  <div id="treeTrail" class="crumbs" aria-label="Current backup path"></div>
-  <div id="treeItems" aria-live="polite"></div>
-  <button class="secondary-button" id="moreFiles" type="button" hidden>Show more files</button>
-  <p class="small muted">Directory contents and sizes reflect files on the USB. They do not prove that every original save was successfully copied or verified. No restoration is performed here.</p>
- </div>
+ <p class="small muted">File lists show what exists on the USB; they do not verify the integrity or completeness of the original saves. File restoration is not available here.</p>
 </section>
 <section id="settings" class="tab" hidden>
  <div class="panel"><h2>Settings</h2>
@@ -202,96 +210,134 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       });
     }).catch(function(){byId("history").textContent="";line("history","No saved history yet");});
   }
-  var explorer={root:"live",date:"",path:"",next:null,version:0};
-  function backupQuery(endpoint){
+  /* Separate state per panel: navigating a snapshot never replaces the
+   * live backup directory, and vice versa. */
+  var explorers={
+    live:{root:"live",date:"",path:"",next:null,version:0},
+    snapshot:{root:"snapshot",date:"",path:"",next:null,version:0}
+  };
+  function backupQuery(explorer,endpoint){
     var url=endpoint+"?root="+explorer.root;
     if(explorer.date)url+="&date="+encodeURIComponent(explorer.date);
     return url;
   }
   function addExplorerMessage(id,message){
-    var p=document.createElement("p");p.className="small muted";p.textContent=message;byId(id).appendChild(p);
+    var p=document.createElement("p");p.className="small muted";
+    p.textContent=message;byId(id).appendChild(p);
   }
   function snapshotList(){
     request("/api/snapshots").then(function(r){return r.text();}).then(function(s){
-      var container=byId("snapshots"),dates=lines(s).sort().reverse();
-      container.textContent="";
-      if(!dates.length){addExplorerMessage("snapshots","No daily snapshots found.");return;}
+      var dates=lines(s).filter(function(d){return /^\d{4}-\d{2}-\d{2}$/.test(d);}).sort().reverse();
+      var select=byId("snapshotPicker");
+      select.textContent="";
+      var first=document.createElement("option");first.value="";first.textContent="Choose a date";
+      select.appendChild(first);
+      if(!dates.length){
+        first.textContent="No daily snapshots found";
+        select.disabled=true;
+        byId("snapshotContent").hidden=true;
+        return;
+      }
+      select.disabled=false;
       dates.forEach(function(day){
-        if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return;
-        var row=document.createElement("div");row.className="explore-row";
-        var btn=document.createElement("button");
-        btn.type="button";btn.textContent="📅 "+day;
-        btn.addEventListener("click",function(){openBrowser("snapshot",day,"");});
-        var detail=document.createElement("span");detail.className="detail";detail.textContent="Browse snapshot";
-        row.appendChild(btn);row.appendChild(detail);container.appendChild(row);
+        var option=document.createElement("option");
+        option.value=day;option.textContent=day;select.appendChild(option);
       });
-    }).catch(function(){byId("snapshots").textContent="";addExplorerMessage("snapshots","Snapshots unavailable.");});
+      /* The most recent snapshot is the default view; the user can change
+       * the date without ever losing the live backup panel. */
+      var previous=explorers.snapshot.date;
+      select.value=dates.indexOf(previous)!==-1?previous:dates[0];
+      openBrowser("snapshot",select.value,"");
+    }).catch(function(){
+      var select=byId("snapshotPicker");
+      select.textContent="";
+      var option=document.createElement("option");
+      option.value="";option.textContent="Snapshots unavailable";
+      select.appendChild(option);select.disabled=true;
+      byId("snapshotContent").hidden=true;
+    });
   }
   function openBrowser(root,day,path){
-    explorer.root=root;explorer.date=day||"";explorer.path=path||"";
-    explorer.next=null;explorer.version++;
-    text("treeHeading",root==="live"?"Live backup":("Snapshot · "+day));
-    byId("treeItems").textContent="";
-    byId("moreFiles").hidden=true;
-    var trail=byId("treeTrail");trail.textContent="";
-    var parts=explorer.path?explorer.path.split("/"):[];
-    var all=["Backup"].concat(parts);
-    all.forEach(function(name,i){
+    var state=explorers[root];
+    if(!state)return;
+    var changed=state.date!==(day||"");
+    state.date=day||"";
+    state.path=path||"";
+    state.next=null;state.version++;
+    if(root==="snapshot")byId("snapshotContent").hidden=!state.date;
+    var items=byId(root+"Items");items.textContent="";
+    byId(root+"More").hidden=true;
+    var trail=byId(root+"Trail");trail.textContent="";
+    var parts=state.path?state.path.split("/"):[];
+    ["Backup"].concat(parts).forEach(function(name,i){
       if(i){var sep=document.createElement("span");sep.textContent="/";trail.appendChild(sep);}
-      var b=document.createElement("button");b.type="button";b.textContent=name;
-      var parent=parts.slice(0,i).join("/");
-      b.addEventListener("click",function(){openBrowser(root,day,parent);});
-      trail.appendChild(b);
+      var button=document.createElement("button");button.type="button";button.textContent=name;
+      var ancestor=parts.slice(0,i).join("/");
+      button.addEventListener("click",function(){openBrowser(root,day,ancestor);});
+      trail.appendChild(button);
     });
-    if(!explorer.path)text("treeSummary","Inventory available after loading the directory…");
-    loadTree(false);
+    if(!state.path || changed)text(root+"Summary","Loading file inventory…");
+    if(root==="live"||state.date)loadTree(root,false);
   }
-  function loadTree(more){
-    var version=explorer.version;
-    var url=backupQuery("/api/tree")+"&path="+encodeURIComponent(explorer.path);
-    if(more && explorer.next)url+="&after="+encodeURIComponent(explorer.next);
-    if(!more){byId("treeItems").textContent="";addExplorerMessage("treeItems","Loading directory…");}
-    byId("moreFiles").hidden=true;
+  function loadTree(root,more){
+    var state=explorers[root], version=state.version;
+    var day=state.date, folder=state.path;
+    var url=backupQuery(state,"/api/tree")+"&path="+encodeURIComponent(folder);
+    if(more && state.next)url+="&after="+encodeURIComponent(state.next);
+    if(!more){
+      byId(root+"Items").textContent="";
+      addExplorerMessage(root+"Items","Loading directory…");
+    }
+    byId(root+"More").hidden=true;
     request(url).then(function(r){return r.json();}).then(function(result){
-      if(version!==explorer.version)return;
-      var container=byId("treeItems");
-      if(!more)container.textContent="";
-      if(!result.entries.length&&!more)addExplorerMessage("treeItems","No files in this directory.");
+      if(version!==state.version)return;
+      var target=byId(root+"Items");
+      if(!more)target.textContent="";
+      if(!result.entries.length&&!more)addExplorerMessage(root+"Items","This folder contains no files.");
       result.entries.forEach(function(item){
         var row=document.createElement("div");row.className="explore-row";
-        var label=document.createElement(item.dir?"button":"span");
-        if(item.dir)label.type="button";
-        var mark=document.createElement("span");mark.className="file-mark";mark.textContent=item.dir?"📁":"📄";
-        label.appendChild(mark);label.appendChild(document.createTextNode(item.name));
+        var name=document.createElement(item.dir?"button":"span");
+        if(item.dir)name.type="button";
+        var icon=document.createElement("span");icon.className="file-mark";
+        icon.textContent=item.dir?"📁":"📄";
+        name.appendChild(icon);name.appendChild(document.createTextNode(item.name));
         if(item.dir){
-          var newPath=explorer.path?(explorer.path+"/"+item.name):item.name;
-          label.addEventListener("click",function(){openBrowser(explorer.root,explorer.date,newPath);});
+          var child=folder?folder+"/"+item.name:item.name;
+          name.addEventListener("click",function(){openBrowser(root,day,child);});
         }
         var detail=document.createElement("span");detail.className="detail";
         detail.textContent=(item.dir?"Folder":size(item.size))+" · "+date(item.mtime);
-        row.appendChild(label);row.appendChild(detail);container.appendChild(row);
+        row.appendChild(name);row.appendChild(detail);target.appendChild(row);
       });
-      explorer.next=result.next;
-      byId("moreFiles").hidden=!result.next;
-      /* One bounded inventory per selected backup, never on folder navigation. */
-      if(!more && !explorer.path){
-        text("treeSummary","Calculating file inventory…");
-        request(backupQuery("/api/summary")).then(function(r){return r.json();}).then(function(data){
-          if(version!==explorer.version)return;
-          var description="Entire backup: "+data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
-          if(!data.complete)description+=" · Partial inventory (limit or unreadable entry)";
-          else description+=" · Filesystem inventory";
-          text("treeSummary",description);
-        }).catch(function(){if(version===explorer.version)text("treeSummary","Summary unavailable; you can still browse the file tree.");});
+      state.next=result.next;
+      byId(root+"More").hidden=!result.next;
+      if(!more && !folder){
+        request(backupQuery(state,"/api/summary")).then(function(r){return r.json();}).then(function(data){
+          if(version!==state.version)return;
+          var desc=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
+          desc+=data.complete?" · Filesystem inventory":" · Partial inventory (limit or unreadable entry)";
+          text(root+"Summary",desc);
+        }).catch(function(){
+          if(version===state.version)
+            text(root+"Summary","Inventory unavailable; file navigation is still possible.");
+        });
       }
     }).catch(function(){
-      if(version!==explorer.version)return;
-      if(!more)byId("treeItems").textContent="";
-      addExplorerMessage("treeItems","Could not read this folder. Check the USB or try again.");
+      if(version!==state.version)return;
+      if(!more)byId(root+"Items").textContent="";
+      addExplorerMessage(root+"Items","Cannot read this folder. Check the USB and try again.");
     });
   }
-  byId("browseLive").addEventListener("click",function(){openBrowser("live","","");});
-  byId("moreFiles").addEventListener("click",function(){if(explorer.next)loadTree(true);});
+  byId("snapshotPicker").addEventListener("change",function(value){
+    var date=byId("snapshotPicker").value;
+    if(date)openBrowser("snapshot",date,"");
+    else byId("snapshotContent").hidden=true;
+  });
+  ["live","snapshot"].forEach(function(root){
+    byId(root+"More").addEventListener("click",function(){
+      if(explorers[root].next)loadTree(root,true);
+    });
+  });
   var sessionToken="",configSource="",configVersion="";
   var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
   var keys=["backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
@@ -375,7 +421,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       var selected=button.getAttribute("data-tab");
       Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(b){b.setAttribute("aria-pressed",b===button?"true":"false");});
       Array.prototype.forEach.call(document.querySelectorAll(".tab"),function(el){el.hidden=el.id!==selected;});
-      if(selected==="backups"){snapshotList();openBrowser("live","","");}
+      if(selected==="backups"){openBrowser("live","","");snapshotList();}
       if(selected==="settings")configuration();
     });
   });
