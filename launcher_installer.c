@@ -1,6 +1,6 @@
-/* Optional PS5Save+ home-screen tile installer (PS5 ELF).
+/* PS5Save+ dashboard tile installer, embedded in the backup daemon.
  *
- * This is NOT part of the backup daemon and is NEVER run automatically.
+ * Installs the tile once during startup, without replacing existing titles.
  * Uses the specific-title AppInstUtil entry point, based on the GPLv3
  * implementations in ps5-payload-dev/ftpsrv and itsPLK/ps5-payload-manager.
  * Unlike those installers, this intentionally does NOT fall back to the
@@ -191,50 +191,51 @@ static int launcher_registered_and_current(void) {
          !lstat(LAUNCHER_ICON, &icon) && S_ISREG(icon.st_mode);
 }
 
-int main(void) {
-  launcher_debug("PS5Save+ installer v3: inicio.");
+static int ps5save_launcher_install(void) {
+  /* Skip quietly on repeat launches; no user-facing Debug noise. */
+  if(launcher_registered_and_current()) return 0;
+  launcher_debug("PS5Save+ launcher: starting installation.");
 
   int rc = kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
   if(rc) {
-    launcher_debug("ERRO: nao foi possivel obter acesso raiz: 0x%08X.",
-                   (unsigned)rc);
+    launcher_debug("ERROR: root access failed: 0x%08X.", (unsigned)rc);
     return 1;
   }
-  launcher_debug("PS5Save+: acesso raiz confirmado.");
+  launcher_debug("PS5Save+ launcher: root access confirmed.");
 
   /* The exact issue fixed in Payload Manager PR #108: on some consoles
    * /user/app does not exist. Create it before touching the title folder. */
   if(!launcher_safe_directory("/user/app", 1, 0770)) {
-    launcher_debug("ERRO: pasta /user/app indisponivel (errno %d).", errno);
+    launcher_debug("ERROR: /user/app directory unavailable (errno %d).", errno);
     return 1;
   }
 
   struct stat st;
   int existing = !lstat(LAUNCHER_ROOT, &st);
   if(existing && (!S_ISDIR(st.st_mode) || !launcher_marker_owned())) {
-    launcher_debug("ERRO: titulo %s ocupado por outra aplicacao. Sem alteracoes.",
+    launcher_debug("ERROR: title ID %s belongs to another application; nothing changed.",
                    LAUNCHER_ID);
     return 1;
   }
   if(!existing && errno != ENOENT) {
-    launcher_debug("ERRO: falha ao verificar /user/app/%s (errno %d).",
+    launcher_debug("ERROR: could not inspect /user/app/%s (errno %d).",
                    LAUNCHER_ID, errno);
     return 1;
   }
   if(existing && launcher_registered_and_current()) {
-    launcher_debug("PS5Save+: atalho ja registado. Nenhuma instalacao necessaria.");
+    launcher_debug("PS5Save+ launcher already installed; no changes needed.");
     return 0;
   }
 
-  launcher_debug("PS5Save+: a inicializar o servico de instalacao.");
+  launcher_debug("PS5Save+ launcher: initializing application installer.");
   rc = sceAppInstUtilInitialize();
   if(rc) {
-    launcher_debug("ERRO: sceAppInstUtilInitialize=0x%08X.", (unsigned)rc);
+    launcher_debug("ERROR: sceAppInstUtilInitialize returned 0x%08X.", (unsigned)rc);
     return 1;
   }
 
   if(!existing && !launcher_safe_directory(LAUNCHER_ROOT, 1, 0755)) {
-    launcher_debug("ERRO: nao foi possivel criar pasta do atalho (errno %d).",
+    launcher_debug("ERROR: could not create launcher directory (errno %d).",
                    errno);
     sceAppInstUtilTerminate();
     return 1;
@@ -242,7 +243,7 @@ int main(void) {
   if(!existing) {
     static const unsigned char marker[] = LAUNCHER_MARKER_VALUE;
     if(!launcher_write_atomic(LAUNCHER_MARKER, marker, sizeof marker - 1)) {
-      launcher_debug("ERRO: nao foi possivel guardar marcador (errno %d).", errno);
+      launcher_debug("ERROR: could not save launcher marker (errno %d).", errno);
       sceAppInstUtilTerminate();
       return 1;
     }
@@ -251,28 +252,28 @@ int main(void) {
      !launcher_write_atomic(LAUNCHER_PARAM, launcher_param, launcher_param_size) ||
      !launcher_write_atomic(LAUNCHER_ICON, notification_icon_png,
                             sizeof notification_icon_png)) {
-    launcher_debug("ERRO: falha a preparar param.json ou icon0.png (errno %d).",
+    launcher_debug("ERROR: could not prepare param.json or icon0.png (errno %d).",
                    errno);
     sceAppInstUtilTerminate();
     return 1;
   }
 
-  launcher_debug("PS5Save+: ficheiros preparados. A registar atalho...");
+  launcher_debug("PS5Save+ launcher: files ready; registering home-screen tile...");
   /* Register only our title; do not globally scan installed applications. */
   rc = sceAppInstUtilAppInstallTitleDir(LAUNCHER_ID, "/user/app/", NULL);
   int terminate_rc = sceAppInstUtilTerminate();
   if(rc) {
-    launcher_debug("ERRO: registo PSSV00001 falhou: 0x%08X.", (unsigned)rc);
+    launcher_debug("ERROR: PSSV00001 registration failed: 0x%08X.", (unsigned)rc);
     return 1;
   }
   if(terminate_rc)
-    launcher_debug("AVISO: terminar AppInstUtil devolveu 0x%08X.",
+    launcher_debug("WARNING: sceAppInstUtilTerminate returned 0x%08X.",
                    (unsigned)terminate_rc);
 
   static const unsigned char ready[] = LAUNCHER_READY_VALUE;
   if(!launcher_write_atomic(LAUNCHER_READY, ready, sizeof ready - 1))
-    launcher_debug("AVISO: atalho registado mas estado local nao guardado.");
+    launcher_debug("WARNING: launcher registered but local status could not be saved.");
 
-  launcher_debug("PS5Save+: registo aceite. Procura o atalho em Multimedia/Biblioteca.");
+  launcher_debug("PS5Save+ launcher: registration accepted. Check Media or Game Library.");
   return 0;
 }
