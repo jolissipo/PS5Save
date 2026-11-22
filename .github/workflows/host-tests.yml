@@ -2,6 +2,7 @@ name: PS5Save+ validation
 on:
   push:
     branches:
+      - main
       - development/ps5save-plus
   pull_request:
     branches:
@@ -110,7 +111,7 @@ jobs:
           retention-days: 7
 
   publish-alpha:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/development/ps5save-plus'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [host-tests, ps5-sdk-build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
