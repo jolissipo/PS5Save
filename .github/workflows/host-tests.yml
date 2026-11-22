@@ -83,17 +83,21 @@ jobs:
         run: |
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk" launcher-installer.elf
+          # A versioned artifact avoids accidentally executing a stale installer.
+          cp launcher-installer.elf launcher-installer-v3.elf
           test -s backup.elf
-          test -s launcher-installer.elf
-          file backup.elf launcher-installer.elf
+          test -s launcher-installer-v3.elf
+          file backup.elf launcher-installer-v3.elf
           readelf -h backup.elf | head -n 28
-          readelf -h launcher-installer.elf | head -n 28
+          readelf -h launcher-installer-v3.elf | head -n 28
+          echo 'Installer runtime dependencies:'
+          readelf -d launcher-installer-v3.elf | grep NEEDED || true
       - name: Upload development ELF for inspection (not a release)
         uses: actions/upload-artifact@v4
         with:
           name: ps5save-plus-development-elf
           path: |
             backup.elf
-            launcher-installer.elf
+            launcher-installer-v3.elf
           if-no-files-found: error
           retention-days: 5
