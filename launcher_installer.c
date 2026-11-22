@@ -15,6 +15,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -28,6 +30,8 @@
 #define LAUNCHER_SYS LAUNCHER_ROOT "/sce_sys"
 #define LAUNCHER_MARKER LAUNCHER_ROOT "/.ps5save-plus-launcher"
 #define LAUNCHER_MARKER_VALUE "PS5Save+ standalone launcher v1\n"
+#define LAUNCHER_READY LAUNCHER_ROOT "/.ps5save-plus-registered-v2"
+#define LAUNCHER_READY_VALUE "PS5Save+ title registration succeeded v2\n"
 #define LAUNCHER_ICON LAUNCHER_SYS "/icon0.png"
 #define LAUNCHER_PARAM LAUNCHER_SYS "/param.json"
 #define LAUNCHER_JSON "launcher/param.json"
@@ -48,6 +52,28 @@ __asm__(".section .rodata\n"
 extern const unsigned char launcher_param[];
 extern const size_t launcher_param_size;
 
+/* The console's Debug notifications are intentionally used ONLY by this
+ * standalone installer. The backup daemon keeps its rich PS5 notifications. */
+typedef struct {
+  char padding[45];
+  char message[3075];
+} launcher_debug_request_t;
+int sceKernelSendNotificationRequest(int, launcher_debug_request_t *, size_t, int);
+static void launcher_debug(const char *fmt, ...) {
+  launcher_debug_request_t req = {0};
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(req.message, sizeof req.message, fmt, args);
+  va_end(args);
+  printf("[PS5Save+ Installer] %s\n", req.message);
+  sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
+}
+
+/* The browser-app installer initializes these services before AppInstUtil.
+ * Initialization failures are diagnostic: the installer still reports the
+ * actual AppInstUtil result rather than presuming a particular cause. */
+int sceNetCtlInit(void);
+int sceUserServiceInitialize(void *);
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilTerminate(void);
 
@@ -124,51 +150,73 @@ static int launcher_marker_owned(void) {
                               sizeof marker - 1);
 }
 
+static int launcher_registered_and_current(void) {
+  static const unsigned char ready[] = LAUNCHER_READY_VALUE;
+  return launcher_file_equals(LAUNCHER_READY, ready, sizeof ready - 1) &&
+         launcher_file_equals(LAUNCHER_PARAM, launcher_param, launcher_param_size) &&
+         launcher_file_equals(LAUNCHER_ICON, notification_icon_png,
+                              sizeof notification_icon_png);
+}
+
 int main(void) {
   struct stat st;
   kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
+  launcher_debug("PS5Save+: a verificar atalho do dashboard.");
 
   if(!lstat(LAUNCHER_ROOT, &st)) {
     if(!S_ISDIR(st.st_mode) || !launcher_marker_owned()) {
-      printf("PS5Save+ launcher: refusing existing unowned title %s\n",
-             LAUNCHER_ID);
+      launcher_debug("ERRO PS5Save+: %s ja existe e nao pertence ao PS5Save+. Sem alteracoes.", LAUNCHER_ID);
       return 1;
     }
   } else if(errno != ENOENT) {
-    perror("PS5Save+ launcher: cannot inspect title");
+    launcher_debug("ERRO PS5Save+: nao foi possivel verificar a pasta (errno %d).", errno);
     return 1;
   } else {
     if(!launcher_safe_directory(LAUNCHER_ROOT, 1)) {
-      perror("PS5Save+ launcher: cannot create title folder");
+      launcher_debug("ERRO PS5Save+: nao foi possivel criar a pasta (errno %d).", errno);
       return 1;
     }
     static const unsigned char marker[] = LAUNCHER_MARKER_VALUE;
     if(!launcher_write_atomic(LAUNCHER_MARKER, marker,
                               sizeof marker - 1)) {
-      printf("PS5Save+ launcher: could not save ownership marker\n");
+      launcher_debug("ERRO PS5Save+: falha no marcador de propriedade (errno %d).", errno);
       return 1;
     }
   }
 
+  /* Repeated runs are intentionally idempotent. Do not change or re-register
+   * a title that our previous successful install already staged unchanged.
+   * A previous failed attempt has no READY marker and can safely be retried. */
+  if(launcher_registered_and_current()) {
+    launcher_debug("PS5Save+: atalho ja registado. Verifica o separador Multimedia ou Biblioteca.");
+    return 0;
+  }
+  launcher_debug("PS5Save+: a preparar o icone e o registo...");
   if(!launcher_safe_directory(LAUNCHER_SYS, 1)) {
-    printf("PS5Save+ launcher: cannot create sce_sys\n");
+    launcher_debug("ERRO PS5Save+: nao foi possivel criar sce_sys (errno %d).", errno);
     return 1;
   }
   if(!launcher_write_atomic(LAUNCHER_PARAM, launcher_param,
                             launcher_param_size)) {
-    printf("PS5Save+ launcher: could not save param.json\n");
+    launcher_debug("ERRO PS5Save+: falha ao guardar param.json (errno %d).", errno);
     return 1;
   }
   if(!launcher_write_atomic(LAUNCHER_ICON, notification_icon_png,
                             sizeof notification_icon_png)) {
-    printf("PS5Save+ launcher: could not save icon0.png\n");
+    launcher_debug("ERRO PS5Save+: falha ao guardar icon0.png (errno %d).", errno);
     return 1;
   }
 
+  int user_priority = 256;
+  int net_rc = sceNetCtlInit();
+  int user_rc = sceUserServiceInitialize(&user_priority);
+  if(net_rc || user_rc)
+    launcher_debug("PS5Save+: servicos PS5: NetCtl=0x%08X UserService=0x%08X.",
+                   (unsigned)net_rc, (unsigned)user_rc);
+
   int rc = sceAppInstUtilInitialize();
   if(rc) {
-    printf("PS5Save+ launcher: AppInstUtil init failed: 0x%08x\n",
-           (unsigned)rc);
+    launcher_debug("ERRO PS5Save+: AppInstUtilInitialize 0x%08X.", (unsigned)rc);
     return 1;
   }
 
@@ -181,19 +229,26 @@ int main(void) {
     install = (install_title_fn)kernel_dynlib_resolve(-1, handle,
                                                      "Wudg3Xe3heE");
   if(!install) {
-    puts("PS5Save+ launcher: targeted install API is unavailable.");
+    launcher_debug("ERRO PS5Save+: API de registo individual indisponivel (NID Wudg3Xe3heE).");
     sceAppInstUtilTerminate();
     return 1;
   }
 
   rc = install(LAUNCHER_ID, "/user/app/", NULL);
-  sceAppInstUtilTerminate();
+  int term_rc = sceAppInstUtilTerminate();
   if(rc) {
-    printf("PS5Save+ launcher: Sony registration failed: 0x%08x\n",
-           (unsigned)rc);
+    launcher_debug("ERRO PS5Save+: registo individual falhou: 0x%08X.", (unsigned)rc);
     return 1;
   }
-  puts("PS5Save+ launcher: registration requested successfully.");
-  puts("The dashboard must already be running at http://127.0.0.1:8755/");
+  if(term_rc)
+    launcher_debug("PS5Save+: aviso ao terminar AppInstUtil: 0x%08X.", (unsigned)term_rc);
+  /* Mark a successful registration only AFTER the registration API returns 0.
+   * Never treat a merely created directory as an installed launcher. */
+  static const unsigned char ready[] = LAUNCHER_READY_VALUE;
+  if(!launcher_write_atomic(LAUNCHER_READY, ready, sizeof ready - 1))
+    launcher_debug("PS5Save+: registado, mas sem marcador de estado (errno %d).", errno);
+  else
+    launcher_debug("PS5Save+: registo aceite! Procura o atalho em Multimedia/Biblioteca.");
+  launcher_debug("PS5Save+: o atalho abre o dashboard apenas com o backup.elf ativo.");
   return 0;
 }
