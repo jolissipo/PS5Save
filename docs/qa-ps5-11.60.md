@@ -1,0 +1,64 @@
+# PS5Save+ — PS5 firmware 11.60 validation checklist
+
+**Development-only build.** This plan is for a controlled physical-console test, not a public release.
+
+## Gate 1 — Non-destructive smoke test
+
+Prerequisites: PS5 on the supported exploit/payload-loader setup, a **spare USB drive** that does not contain valuable backups, and a PC/phone on the same trusted LAN.
+
+1. Save the currently working PS5Save ELF and `backup.conf` separately. **Remove the normal backup USB device** before this test.
+2. Use a spare USB device formatted in a PS5-readable filesystem, with this minimal `backup.conf` at its root:
+
+   ```ini
+   backup_interval_seconds=300
+   backup_notifications=all
+   backup_notifications_in_game=false
+   backup_ps4_saves=false
+   backup_ps5_saves=false
+   backup_encrypted_saves=false
+   backup_ps4_trophies=false
+   backup_ps5_trophies=false
+   daily_snapshots_to_keep=0
+   ```
+
+   No source paths are configured, so this stage does not intentionally copy saves.
+3. Obtain **`backup.elf` only** from the latest successful PS5 SDK GitHub Actions build. Do **not** execute `launcher-installer.elf` during this gate.
+4. Launch `backup.elf` normally. **Important:** PS5Save+ uses the same singleton lock (loopback port 9055) as PS5Save; launching it will replace an existing PS5Save instance. It does not restore the old instance automatically.
+5. Verify the PS5 displays exactly one startup confirmation, not a repeated notification each five minutes.
+6. From the PC, open `http://<PS5-LAN-IP>:8755/`. Verify the dashboard responds, displays the USB state, and shows `backup.conf`.
+7. Check the spare USB device contains `ps5save-plus/events.log` after normal activity. A no-change pass need not create a history entry.
+8. Click **Unlock editing on PS5**. Verify the pairing toast appears on the console, confirm the six-digit code, and change only `backup_interval_seconds` from 300 to 120.
+9. Check that the USB's `backup.conf` now contains 120 and `backup.conf.bak` contains the previous 300. Verify the displayed interval changes after the next scheduled pass. Restore 300 via the dashboard.
+10. Confirm attempts to edit without a valid pairing code are rejected. Do not expose port 8755 outside the trusted LAN.
+
+**Abort and restore the previous ELF** if the console freezes, the USB changes unexpectedly, configuration is corrupted, the dashboard becomes unreliable, or console notifications fail. Keep the original payload and its USB backup configuration intact.
+
+## Gate 2 — Backup correctness (only after Gate 1 passes)
+
+- With a separate source **containing dispensable test data**, verify the initial copy, unchanged pass, changed-file copy and preservation of original data.
+- Exercise snapshots with `daily_snapshots_to_keep=2`, verify that completed dated folders do not change within the same day, and verify retention on later dates.
+- Test low USB free space, a missing source and a write/read failure in a controlled environment. Confirm the notifier gives a useful cause without bursts; verify the persistent log retains details.
+- Verify a previously alerted problem generates only one recovery notice after resolution.
+- With **test-game saves**, verify active/suspended-title deferral, resumption after game exit, decrypted backup, original encrypted backup and expected file consistency.
+- Verify USB disconnect/reconnect and PS5 rest mode do not crash the backup daemon and do not corrupt the configuration or backups.
+
+## Gate 3 — Optional home-screen launcher (do not run yet)
+
+The separate installer changes console application metadata. Before running it:
+
+- Review the chosen title ID `P5SV00001` for collisions with installed content.
+- Confirm the correct registration API on firmware 11.60, that the icon opens `http://127.0.0.1:8755/`, and that it stays functional after console reboot and rest mode.
+- Design and validate **safe uninstall/rollback** using Sony's app-management interface. No automatic uninstall exists in this branch.
+- Only then test the dedicated `launcher-installer.elf` with a backup of relevant console state.
+
+## Validation status
+
+- [x] Host regression scenarios pass in GitHub Actions.
+- [x] Embedded dashboard JavaScript passes syntax checks.
+- [x] PS5 `backup.elf` cross-compiles with official SDK v0.50.
+- [x] Optional launcher-installer cross-compiles with official SDK v0.50.
+- [ ] Gate 1 completed on a physical PS5 (FW 11.60).
+- [ ] Gate 2 completed on a physical PS5 (FW 11.60).
+- [ ] Gate 3 completed on a physical PS5 (FW 11.60).
+
+Do not merge the development PR or mark a version as stable based on cross-compilation alone.
