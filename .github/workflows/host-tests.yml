@@ -24,6 +24,31 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run host tests
         run: sh tests/run-host-tests.sh
+      - name: Check dashboard JavaScript syntax and launcher metadata
+        run: |
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          import pathlib, json
+          class ScriptParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.in_script = False
+                  self.scripts = []
+              def handle_starttag(self, name, attrs):
+                  if name == "script": self.in_script = True
+              def handle_endtag(self, name):
+                  if name == "script": self.in_script = False
+              def handle_data(self, data):
+                  if self.in_script: self.scripts.append(data)
+          p = ScriptParser()
+          p.feed(pathlib.Path("dashboard/index.html").read_text(encoding="utf-8"))
+          assert len(p.scripts) == 1, "Dashboard must contain one inline script"
+          pathlib.Path("/tmp/ps5save-dashboard.js").write_text(p.scripts[0], encoding="utf-8")
+          j = json.loads(pathlib.Path("launcher/param.json").read_text(encoding="utf-8"))
+          assert j["titleId"] == "P5SV00001"
+          assert j["deeplinkUri"] == "http://127.0.0.1:8755/"
+          PY
+          node --check /tmp/ps5save-dashboard.js
 
   ps5-sdk-build:
     runs-on: ubuntu-latest
@@ -44,13 +69,18 @@ jobs:
       - name: Cross-compile PS5Save+ ELF
         run: |
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
+          make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk" launcher-installer.elf
           test -s backup.elf
-          file backup.elf
+          test -s launcher-installer.elf
+          file backup.elf launcher-installer.elf
           readelf -h backup.elf | head -n 28
+          readelf -h launcher-installer.elf | head -n 28
       - name: Upload development ELF for inspection (not a release)
         uses: actions/upload-artifact@v4
         with:
           name: ps5save-plus-development-elf
-          path: backup.elf
+          path: |
+            backup.elf
+            launcher-installer.elf
           if-no-files-found: error
           retention-days: 5
