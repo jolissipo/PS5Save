@@ -28,3 +28,9 @@ for scenario in legacy settings errors off gameplay protection empty read-error 
     exit 1
   fi
 done
+
+# Exercise the embedded HTML and HTTP router without PS5 hardware.
+${CC:-cc} ${CFLAGS:-} -std=c11 -D_DEFAULT_SOURCE -UNDEBUG -Wall -Wextra -Werror -pthread \
+  -DTEST_ROOT="\"$test_dir/dashboard-fixture\"" \
+  tests/dashboard.c -o "$test_dir/dashboard"
+"$test_dir/dashboard"
