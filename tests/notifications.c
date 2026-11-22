@@ -43,8 +43,9 @@ static int fail_notification_send;
 static int test_console_language = 1;
 static int storage_debug_count;
 static char storage_debug_last[512];
-int sceKernelSendNotificationRequest(int device, storage_debug_request_t *request,
+int sceKernelSendNotificationRequest(int device, void *data,
                                      size_t size, int unused) {
+  storage_debug_request_t *request = data;
   assert(device == 0 && size == sizeof *request && unused == 0);
   assert(strlen(request->message) < sizeof storage_debug_last);
   strcpy(storage_debug_last, request->message);
@@ -526,7 +527,7 @@ test_layout(void) {
    * the event through Debug, not the normal backup notification system. */
   assert(!storage_prepare());
   assert(storage_debug_count == 1);
-  assert(strstr(storage_debug_last, "backup.conf criado"));
+  assert(strstr(storage_debug_last, "default backup.conf created"));
   assert(access(CONF_PATH, R_OK) == 0);
   assert(toast_count(NULL) == 0);
   expect_file(CONF_PATH, "# PS5Save+ default configuration\n");
