@@ -2655,7 +2655,8 @@ run_cycle(int pending_only) {
    */
   if(notification_recovered && !stats.failed && !notification_cycle_failed &&
      !stats.skipped && !g_cycle_deferred && snapshot_result >= 0 &&
-     (!live_work_started || notification_settings.mode == NOTICES_ERRORS)) {
+     ((!live_work_started && snapshot_result == 0) ||
+      notification_settings.mode == NOTICES_ERRORS)) {
     pthread_mutex_lock(&notification_mutex);
     notification_emit_locked(NOTICE_WARNING, "Backup protection restored.");
     pthread_mutex_unlock(&notification_mutex);
