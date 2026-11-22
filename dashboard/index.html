@@ -71,7 +71,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <div class="wrap">
 <header>
  <div class="brand"><div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor" focusable="false"><path d="M8.984 2.596v17.547l3.915 1.261V6.688c0-.69.304-1.151.794-.991.636.18.76.814.76 1.505v5.875c2.441 1.193 4.362-.002 4.362-3.152 0-3.237-1.126-4.675-4.438-5.827-1.307-.448-3.728-1.186-5.39-1.502zm4.656 16.241l6.296-2.275c.715-.258.826-.625.246-.818-.586-.192-1.637-.139-2.357.123l-4.205 1.5V14.98l.24-.085s1.201-.42 2.913-.615c1.696-.18 3.785.03 5.437.661 1.848.601 2.04 1.472 1.576 2.072-.465.6-1.622 1.036-1.622 1.036l-8.544 3.107V18.86zM1.807 18.6c-1.9-.545-2.214-1.668-1.352-2.32.801-.586 2.16-1.052 2.16-1.052l5.615-2.013v2.313L4.205 17c-.705.271-.825.632-.239.826.586.195 1.637.15 2.343-.12L8.247 17v2.074c-.12.03-.256.044-.39.073-1.939.331-3.996.196-6.038-.479z"/></svg></div>
- <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha</p></div></div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.1-alpha</p></div></div>
  <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
 </header>
 <nav aria-label="Dashboard sections">
@@ -79,7 +79,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <button type="button" data-tab="backups" aria-pressed="false">Backups</button>
  <button type="button" data-tab="settings" aria-pressed="false">Settings</button>
 </nav>
-<p class="muted small" id="usbTransferNotice" role="status" hidden></p>
+<p class="muted small" id="activityNotice" role="status" hidden></p>
 <main>
 <section id="overview" class="tab">
  <div class="grid">
@@ -179,13 +179,21 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   function request(path){return fetch(path,{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r;});}
   function lines(s){return s.split(/\r?\n/).filter(function(x){return x.trim().length>0;});}
   function line(id,left,right){var li=document.createElement("li"),a=document.createElement("span"),b=document.createElement("span");a.textContent=left;b.textContent=right||"";li.appendChild(a);li.appendChild(b);byId(id).appendChild(li);}
-  function syncTransferEditing(moving){
+  var settingsBusy=false;
+  function syncBusyEditing(busy){
+    settingsBusy=busy;
     var settingsTab=document.querySelector('nav button[data-tab="settings"]');
-    settingsTab.disabled=moving;
+    settingsTab.disabled=busy;
     Array.prototype.forEach.call(byId("preferences").querySelectorAll("input, select, button"),
-      function(control){control.disabled=moving;});
-    /* If a transfer starts while Settings is open, return to the read-only overview. */
-    if(moving && !byId("settings").hidden){
+      function(control){control.disabled=busy;});
+    Array.prototype.forEach.call(byId("pairForm").querySelectorAll("input, button"),
+      function(control){control.disabled=busy;});
+    byId("rawConfig").disabled=busy;
+    byId("saveRaw").disabled=busy;
+    byId("requestPair").disabled=busy || !!sessionToken;
+    /* Settings is unavailable during backup checks and USB transfers.
+     * Keep Overview, Backups and the logs accessible. */
+    if(busy && !byId("settings").hidden){
       byId("settings").hidden=true;
       byId("overview").hidden=false;
       Array.prototype.forEach.call(document.querySelectorAll("nav button"),
@@ -202,15 +210,17 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       text("usbFree",x.usbOnline?size(x.usbFree):"Unavailable");
       text("usbTotal",x.usbOnline?size(x.usbTotal)+" total":"Connect your USB backup drive");
       text("usbCurrent",x.usbDevice||"");
-      var notice=byId("usbTransferNotice");
-      notice.hidden=!x.usbMoving;
+      var notice=byId("activityNotice"),busy=!!(x.usbMoving || x.running);
+      notice.hidden=!busy;
       if(x.usbMoving){
         var progress=x.usbPercent>0?" · "+x.usbPercent+"%":"";
         badge.textContent="Transferring backups"+progress;
         notice.textContent="USB backup transfer in progress"+progress+
           ". You can view the dashboard and logs; Settings is temporarily disabled.";
+      } else if(x.running) {
+        notice.textContent="Backup in progress. You can view the dashboard and logs; Settings is temporarily disabled.";
       }
-      syncTransferEditing(!!x.usbMoving);
+      syncBusyEditing(busy);
       text("interval",x.interval?x.interval+" s":"—");
       text("files",x.hasRun?String(x.copied):"—");
       text("bytes",x.hasRun?size(x.bytes)+" copied":"No recent data");
@@ -369,7 +379,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   var sessionToken="",configSource="",configVersion="";
   function setEditingState(enabled){
     var button=byId("requestPair");
-    button.disabled=enabled;
+    button.disabled=enabled || settingsBusy;
     button.textContent=enabled?"Editing already enabled":"Unlock editing on PS5";
     byId("pairForm").hidden=true;
     byId("settingsForm").hidden=!enabled;
@@ -482,9 +492,9 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     button.disabled=true; /* Prevent overlapping pairing requests in this page. */
     text("pairMessage","Requesting code…");
     post("/api/pair","").then(function(message){
-      button.disabled=false;
+      button.disabled=settingsBusy || !!sessionToken;
       text("pairMessage",message);byId("pairForm").hidden=false;byId("pairCode").focus();
-    }).catch(function(error){button.disabled=false;text("pairMessage",error.message);});
+    }).catch(function(error){button.disabled=settingsBusy || !!sessionToken;text("pairMessage",error.message);});
   });
   byId("pairForm").addEventListener("submit",function(event){
     event.preventDefault();
@@ -498,7 +508,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   });
   byId("preferences").addEventListener("submit",function(event){
     event.preventDefault();
-    if(!sessionToken||!configVersion)return;
+    if(settingsBusy||!sessionToken||!configVersion)return;
     var form=byId("preferences"),result=configSource;
     if(!form.checkValidity()){
       if(form.reportValidity)form.reportValidity();
@@ -513,7 +523,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     saveConfiguration(result,"saveMessage");
   });
   byId("saveRaw").addEventListener("click",function(){
-    if(!sessionToken||!configVersion)return;
+    if(settingsBusy||!sessionToken||!configVersion)return;
     saveConfiguration(byId("rawConfig").value,"saveMessage");
   });
   Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(button){
@@ -531,7 +541,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     request("/api/logs").then(function(r){return r.text();}).then(function(s){el.textContent=s||"No recent entries.";}).catch(function(){el.textContent="No diagnostic logs are available.";});
   });
   status();history();
-  setInterval(status,12000);
+  setInterval(status,3000);
   setInterval(history,60000);
   setInterval(verifyEditorSession,60000);
 })();
