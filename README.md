@@ -1,55 +1,77 @@
-# PS5Save · jolissipo fork
+# PS5Save+
 
-PS5Save is a USB backup utility for jailbroken PS5 consoles. The original project was created by **heni0xyz** and developed with the upstream contributors. This fork is based on PS5Save v3. [Original project](https://github.com/heni0xyz/PS5Save) · [Upstream v3](https://github.com/heni0xyz/PS5Save/releases/tag/v3)
+**Smarter backups. Fewer interruptions.**
 
-This fork was created to make automatic backups quieter. It adds notification modes, gameplay muting, less frequent progress updates and fewer repeated alerts. PS5Save supports PS4 and PS5 saves, trophies, emulator files and daily snapshots.
+PS5Save+ is a lightweight PS5 save-backup payload with native console notifications, persistent USB diagnostics and an optional web dashboard. It is a fork of [PS5Save](https://github.com/heni0xyz/PS5Save) by **heni0xyz** and contributors, based on upstream v3 and the subsequent notification-redesign work.
 
-## Install
+> **Development branch — not a tested console release.** Do not replace your working backup payload with this build until the PS5-specific functionality has been validated.
 
-1. Download the `.elf` asset from a release tagged `jolissipo-v*`. [Fork releases](https://github.com/jolissipo/PS5Save/releases)
-2. Copy the example configuration to `backup.conf` at the root of an exFAT USB drive. Enable the backup types you need and keep only the file paths you use. [Example configuration](backup.conf)
-3. Connect the USB drive and load the ELF with your payload loader. PS5Save reads the configuration from `/mnt/usb0/backup.conf` and writes backups under `/mnt/usb0/backup`.
+## What is implemented on this branch
 
-Decrypted saves from active or suspended titles are deferred until the title closes. Close the game before copying encrypted saves or trophy data for a consistent backup.
+- The existing PS4/PS5 decrypted saves, original encrypted saves, trophy data, optional emulator paths and daily snapshots remain supported.
+- Normal passes no longer notify for every scan, empty configured directory or unchanged backup. An initial quiet pass confirms that backup protection is active; copies produce completion notifications. Progress checks use a 60-second interval by default, rather than repetitive 30-second checks.
+- The rich Sony-style notification transport and the original `all`, `errors`, `off` modes are preserved; the example configuration avoids toasts during games.
+- A small **read-only HTTP dashboard** runs on TCP **8755**, independently of backup operations. It shows the recent pass, available USB space, backup directory categories, dated snapshots, diagnostic history and the current `backup.conf`.
+- A bounded `events.log` records diagnostics to USB; `history.tsv` records meaningful backup passes. Rotation prevents unlimited file growth.
+- No external web service, database, Node.js or other runtime is required for the dashboard.
 
-## Notifications
+**Not yet implemented:** authenticated browser-based editing of `backup.conf`, automatic notification translation, recovery alerts and an optional PS5 home-screen launcher. These require separate validation. The dashboard intentionally rejects non-GET requests until safe editing is available.
 
-The example enables all save and trophy backup options and shows notifications during gameplay.
+## Installation (development/testing)
+
+1. Copy [backup.conf](backup.conf) to the root of an exFAT USB device; edit the enabled backup sources to match your needs.
+2. Compile with the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk), then execute `backup.elf` using your usual PS5 payload loader.
+3. If the console IP is `192.168.1.91`, open `http://192.168.1.91:8755` on a PC or phone on the same trusted network.
+4. The PS5 backup service works normally even if TCP 8755 is already occupied or the dashboard is not accessible.
+
+**Security:** the dashboard currently serves read-only status, backups metadata, history and configuration through unencrypted HTTP. Restrict access to your trusted local network, do not forward port 8755 to the internet, and do not connect it to a public proxy. Browser-based configuration writes are disabled until authentication and save-safety mechanisms are implemented.
+
+The server does not automatically open the PS5 browser or install an app icon. The dashboard is optional and is not required for backups to run.
+
+## Configuration
+
+The [example backup.conf](backup.conf) enables PS4/PS5 backups while leaving emulator-specific paths commented out. Review these choices before using it with real data.
 
 ```ini
+backup_interval_seconds=30
 backup_notifications=all
-backup_notifications_in_game=true
+backup_notifications_in_game=false
+backup_ps4_saves=true
+backup_ps5_saves=true
+backup_encrypted_saves=true
+backup_ps4_trophies=true
+backup_ps5_trophies=true
+max_title_size_mb=4096
+daily_snapshots_to_keep=3
 ```
 
-| Setting | Values | Default when omitted |
-| --- | --- | --- |
-| `backup_notifications` | `all` for status, progress, warnings and errors. `errors` for warnings and errors. `off` for visual silence. | `all` |
-| `backup_notifications_in_game` | `true` follows the selected mode. `false` mutes toasts during possible game or app activity. | `true` |
+The file remains the only source of backup configuration. For consistent copies of encrypted saves and trophy data, close the relevant game before the pass; decrypted saves from active or suspended titles are deferred until closure.
 
-In `all` mode, each pass shows **Checking for backup changes**. An unchanged source set reports **No changes. Backup not needed.** A pass with new data shows **Changes found. Backing up.** when copying starts and **Backup complete** on success. A snapshot-only pass has its own status. Empty configured folders report their name. Unreadable sources and skipped work report separate messages.
+## Files on USB
 
-Progress shows up to three milestones at 25%, 50% and 75%. The first progress toast can appear after 30 seconds of copying, and additional progress toasts are at least 30 seconds apart. When several milestones are reached together, only the latest is shown. The previous `backup_progress_interval_seconds` setting is retired. Warnings and errors remain in the logs in every mode.
+| Path | Purpose |
+| --- | --- |
+| `/mnt/usb0/backup.conf` | Main editable configuration |
+| `/mnt/usb0/backup/` | Live backup data |
+| `/mnt/usb0/backup_daily/YYYY-MM-DD/` | Optional dated snapshots |
+| `/mnt/usb0/ps5save-plus/events.log` | Rotating diagnostic log, up to 256 KiB |
+| `/mnt/usb0/ps5save-plus/events.log.1` | Previous log segment |
+| `/mnt/usb0/ps5save-plus/history.tsv` | Rotating history of meaningful backup passes, up to 128 KiB |
+| `/mnt/usb0/ps5save-plus/history.tsv.1` | Previous history segment |
 
-The PS5 controls pop-up duration through **Settings → Notifications → Display Time**. How this setting affects PS5Save's custom toasts still needs console validation. [PlayStation support](https://www.playstation.com/en-gb/support/account/manage-notifications-ps5/#settings)
+Log and history writes are best-effort. Failure to write diagnostics does not stop a backup.
 
-The activity check can also mute toasts for suspended titles or when the activity state is unknown. The policy reloads on backup passes and stays in effect if the USB becomes unavailable. A first startup with an unreadable configuration uses the defaults.
-
-## Build and test
-
-With Clang/LLVM 18 and PS5 Payload SDK v0.45 installed on Linux, run the following from the repository root. [PS5 Payload SDK v0.45](https://github.com/ps5-payload-dev/sdk/releases/tag/v0.45)
+## Build and tests
 
 ```sh
-make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk LLVM_CONFIG="$(command -v llvm-config-18)"
+make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+make test
 ```
 
-The output is `backup.elf`. Run `tests/run-host-tests.sh` for the Linux notification tests. Toast rendering and activity detection still need console validation.
+The build embeds `dashboard/index.html` in the ELF. Host tests exercise the backup/notification logic and the dashboard HTTP routes; native PS5 notifications, save mounts, the console browser and rest-mode behavior require physical-console tests.
 
-## Credits and license
+## Credits and licence
 
-- **heni0xyz** and upstream contributors for PS5Save and its backup engine. [Upstream repository](https://github.com/heni0xyz/PS5Save)
-- **n0llptr** for PlayStation 5 Save Mounter. [Project](https://github.com/n0llptr/Playstation-5-Save-Mounter)
-- **earthonion** for game title loading and save creation code. [Garlic SaveMgr](https://git.etawen.dev/earthonion/garlic-savemgr)
-- **cow** for save mounting research using the PS5 `sceFs*` functions.
-- **drakmor** and the ShadowMountPlus contributors for the rich notification transport. [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus)
+Based on [PS5Save](https://github.com/heni0xyz/PS5Save) by heni0xyz and original contributors, including code and research credited there. Thanks also to the [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) project for the rich notification transport and [PS5 Payload Template](https://github.com/ghost1372/PS5-Payload-Template) for the reference approach to embedded HTTP dashboards.
 
-Distributed under the GNU General Public License v3. [License](LICENSE)
+Distributed under **GPL-3.0**. See [LICENSE](LICENSE).
