@@ -1,80 +1,82 @@
 # PS5Save+
 
-**Automatic PS5 save backups, with clearer notifications and a built-in web dashboard.**
+Automatic, incremental save-data backups for jailbroken PlayStation 5 consoles. PS5Save+ extends [heni0xyz/PS5Save](https://github.com/heni0xyz/PS5Save) with a web dashboard, USB migration, daily snapshots and console notifications.
 
-PS5Save+ is our fork of [PS5Save](https://github.com/heni0xyz/PS5Save). We created it to keep the original project's straightforward, reliable backup approach while improving the everyday experience: fewer interruptions, more visibility into saved data, simpler configuration and one payload for the entire workflow.
-
-> **Alpha software.** The backup engine, dashboard and launcher have been tested on PS5 firmware 11.60. Multi-USB selection and cross-drive transfers are new in alpha.3 and still require console validation. Keep a separate copy of important saves.
+> **Alpha release.** The backup engine and USB migration have been tested on PS5 firmware 11.60. Standby recovery and the idle-sleep timer require additional console validation. Maintain an independent copy of important saves.
 
 ## Features
 
-- **Automatic incremental backups:** decrypted PS4/PS5 saves, original encrypted save files, trophy data and optional custom directories for emulators.
-- **Daily snapshots:** dated copies of the live backup, with configurable retention.
-- **Thoughtful notifications:** backup completion and errors, adaptive progress updates for longer backups and USB transfers, transfer start/success/failure alerts, and translated messages for supported console languages.
-- **Web dashboard:** backup status, file explorer, separate live backups and snapshots, storage selection, transfer progress, history and one unified diagnostic log.
-- **USB selection:** automatically preserves existing backups or chooses the writable USB with most free space on a fresh installation. Switch to another mounted USB from the dashboard or `backup.conf`; files are staged and compared byte-for-byte before the source is removed.
-- **Easy settings:** edit `backup.conf` after authorising each browser with a code shown on the PS5. Up to eight one-hour sessions remain independent; a pending two-minute code can be resent without extending its validity.
-- **Home-screen shortcut:** automatically installs the PS5Save+ dashboard tile if missing. Subsequent launches do not reinstall it.
-- **One ELF:** no separate launcher, database or web service required.
+- **Incremental backups:** decrypted PS4/PS5 saves, original encrypted save files, trophy data and optional custom directories (including emulator saves). Unchanged files are skipped.
+- **Game-aware protection:** backup of saves belonging to an active or suspended title is postponed until the title closes. Other eligible data can still be copied.
+- **Daily snapshots:** dated copies of the live backup with configurable retention.
+- **USB selection and migration:** detects existing installations across mounted USB drives before selecting a destination. A new installation prefers the writable USB with the most available space. Transfers use a staging directory and byte-for-byte verification before replacing the active location; pre-existing destination backups are never overwritten.
+- **Web dashboard:** status, backup inventory, file browsing, snapshots, history, diagnostic logs and configuration editing.
+- **Pairing security:** each browser requires a six-digit code shown on the console. Codes expire after two minutes and may be resent without extending their validity (minimum five seconds between replays). Up to eight independent one-hour editing sessions are supported. Concurrent edits are protected against stale configuration versions.
+- **PS5 notifications:** configurable informational, warning and error messages; adaptive transfer progress; supported console-language translations. Routine unchanged passes remain silent.
+- **Home-screen shortcut:** automatically installed when absent. Opens the dashboard without requiring a separate web application.
+- **Standby handling:** retries the dashboard HTTP listener after a console wake, network change or socket failure. During active data copying, the payload requests resets of the idle power timer; this does **not** prevent manual standby or an HDMI-CEC power-off request.
 
-The backup service runs in the background while the payload remains active. Saves belonging to a running or suspended game are deferred until that title closes; for consistent original encrypted saves and trophy copies, close the game before the backup pass.
+## Installation
 
-## Getting started
+1. Connect an **exFAT USB drive** with sufficient free space.
+2. Download the latest `ps5saveplus_*.elf` from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with a PS5 ELF loader.
+3. The payload selects an eligible USB, creates the configuration if missing, performs the initial backup check and installs the dashboard shortcut.
+4. Open the shortcut on the console, or visit `http://<PS5-IP>:8755/` on a device connected to the same trusted network.
 
-1. Connect an **exFAT USB drive** with enough free space for your backups and snapshots.
-2. Download **`ps5saveplus_v0.1.0-alpha.7.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
-3. On first launch, PS5Save+ selects a mounted USB, creates `/mnt/usbN/ps5save-plus/backup.conf` if missing, checks for changes immediately and installs the dashboard shortcut if needed.
-4. Open the PS5Save+ shortcut, or use `http://<PS5-IP>:8755/` from a device on the same trusted network.
+The backup engine remains active while the payload process runs. **After a full console reboot, the ELF must be launched again.** The home-screen shortcut opens the dashboard; it does not launch the backup service.
 
-To change settings, open **Settings → Unlock editing on PS5**, then enter the temporary code shown on the console. In **Backup USB drive**, select another mounted USB; the transfer starts after the current backup check finishes. The dashboard shows the active USB, available space and transfer progress. It remains accessible during a transfer: Overview and Backups stay usable, while Settings is temporarily disabled.
+To edit settings, select **Settings → Unlock editing on PS5** and enter the code displayed on the console. The code is single-use; repeated requests during its validity show the same code. Editing is unavailable while USB migration is active, but backup browsing and logs remain accessible.
 
-The shortcut opens the web dashboard; it **does not automatically restart the payload** after a console reboot.
-
-### USB layout
+## USB data layout
 
 ```text
-ps5save-plus/
+/mnt/usbN/ps5save-plus/
 ├── backup.conf
-├── backup/                    # Current backup
+├── backup/                    # Current incremental backup
 ├── backup_daily/YYYY-MM-DD/   # Dated snapshots
-├── events.log                 # Rotating diagnostics
+├── events.log                 # Diagnostics (rotates to events.log.1)
 └── history.tsv                # Backup activity
 ```
 
-If an existing PS5Save+ or legacy PS5Save backup is connected, it takes priority over a blank USB, regardless of free space. If multiple connected USB drives contain existing backup installations, a **Debug notification** identifies the detected drives and selected location; the same information is retained in `events.log`. Other installations are never changed automatically. Legacy root-level files are relocated without recopying them. For transfers **between two USB drives**, PS5Save+ copies the full directory to a staging folder, compares the files byte-for-byte and only then switches destination. An existing destination folder is never overwritten; failed transfers preserve the original. Keep an independent backup before testing cross-drive migration.
+Existing PS5Save and PS5Save+ backups take priority over empty drives. If multiple USB devices contain installations, a Debug notification and `events.log` identify the detected drives and chosen destination; no other installation is changed. Switching drives copies and verifies the entire data directory. If verification fails, the original remains on the source USB.
 
-### Configuration
+## Configuration
 
-The [default backup.conf](backup.conf) can also be edited directly on the USB. Essential options:
+Options in [`backup.conf`](backup.conf) can be changed through the dashboard or directly on the USB.
 
-| Setting | Default | Purpose |
+| Option | Default | Description |
 | --- | --- | --- |
-| `backup_usb_device` | `auto` | Auto-select or choose `/mnt/usb0`–`/mnt/usb7` |
-| `backup_interval_seconds` | `30` | Interval between regular checks |
+| `backup_usb_device` | `auto` | Automatic selection, or `/mnt/usb0`–`/mnt/usb7` |
+| `backup_interval_seconds` | `30` | Interval between regular checks (seconds) |
 | `backup_notifications` | `all` | `all`, `errors` or `off` |
-| `backup_notifications_in_game` | `false` | Suppress notifications while playing |
-| `backup_ps4_saves` / `backup_ps5_saves` | `true` | Decrypted saves |
-| `backup_encrypted_saves` | `true` | Original save files |
+| `backup_notifications_in_game` | `false` | Show notifications during gameplay |
+| `backup_ps4_saves` / `backup_ps5_saves` | `true` | Decrypted game saves |
+| `backup_encrypted_saves` | `true` | Original encrypted saves |
 | `backup_ps4_trophies` / `backup_ps5_trophies` | `true` | Trophy data |
-| `daily_snapshots_to_keep` | `3` | Number of daily snapshots retained |
+| `daily_snapshots_to_keep` | `3` | Number of daily snapshots (0–10) |
+| `max_title_size_mb` | `4096` | Maximum combined save-image size per title |
 
-Optional emulator paths can be enabled in `backup.conf` or added through the advanced editor.
+Custom absolute source paths may be added with the advanced editor. The web interface is deliberately restricted to the local network; **do not expose port 8755 directly to the internet**.
 
-## Build
+## Rest mode and HDMI-CEC
 
-Requires the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) and its Linux toolchain.
+The dashboard attempts to restore its HTTP listener after the console resumes. A process still listed in PLDMGR does not, by itself, confirm that its HTTP service is reachable. The listener recovery needs validation on real hardware.
+
+The automatic idle timer is refreshed during active copy and verification operations, using `sceSystemServicePowerTick()`. This is a best-effort idle-sleep measure, not a standby lock. To avoid standby when the TV turns off, disable **Settings → System → HDMI → Enable Power Off Link** on the PS5. **Enable One-Touch Play** can remain on.
+
+Do not unplug USB drives or intentionally enter Rest Mode during a migration. A failed or interrupted migration retains the original data; verify its completion before changing drives.
+
+## Build and tests
+
+Requires the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) and its compiler toolchain.
 
 ```sh
 make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
 sh tests/run-host-tests.sh
 ```
 
-The output is `ps5saveplus.elf`. Release downloads use a versioned filename. GitHub Actions runs host regression tests and cross-compiles the PS5 executable.
+The build produces `ps5saveplus.elf`. GitHub Actions runs host regression tests and a PS5 SDK cross-compilation for release candidates.
 
-## Notes and credits
+## Licence and attribution
 
-- **Diagnostics:** backup, launcher and USB-transfer events share `events.log`, available in the dashboard. A failed USB transfer reports the error on the console and directs you to the logs.
-- **Security:** the dashboard uses HTTP on port **8755**. Keep it on a trusted local network; never expose it directly to the internet. Editing requires a temporary code displayed on the PS5.
-- **Backup verification:** the dashboard inventories files present on USB; it does not verify every original save cryptographically. Cross-USB migrations do compare copied file contents, but do not independently validate the original saves.
-- **Project origin:** based on PS5Save by [heni0xyz and contributors](https://github.com/heni0xyz/PS5Save). The fork retains and builds on their backup implementation. Additional research and components are credited in the source.
-- **Licence:** [GPL-3.0](LICENSE).
+GPL-3.0. Based on [PS5Save](https://github.com/heni0xyz/PS5Save), which incorporates research and code from the PlayStation 5 save-mounting ecosystem. PS5Save+ uses the PS5 system-service idle timer approach documented by [KeepAwake](https://github.com/mortyzip/KeepAwake) (MIT). See [LICENSE](LICENSE) and source comments for attribution.
