@@ -110,7 +110,7 @@ along with this program; see the file COPYING. If not, see
  * fixtures retain compile-time literal paths to exercise the backup engine. */
 #ifndef BACKUP_HOST_TEST
 #define PS5SAVE_DYNAMIC_STORAGE 1
-static char storage_usb_path[32] = "/mnt/usb0";
+static char storage_usb_path[PATH_MAX] = "/mnt/usb0";
 static char storage_root_path[PATH_MAX] = "/mnt/usb0/ps5save-plus";
 static char storage_conf_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf";
 static char storage_backup_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup";
