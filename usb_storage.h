@@ -13,6 +13,7 @@ static atomic_int storage_migrating;
 static atomic_uint storage_migration_percent;
 static pthread_mutex_t storage_change_lock = PTHREAD_MUTEX_INITIALIZER;
 static char storage_move_error[256] = "";
+/* The launcher now uses the same events.log as the backup engine. */
 
 static int storage_usb_number(const char *path) {
   size_t prefix = strlen(STORAGE_USB_PREFIX);
