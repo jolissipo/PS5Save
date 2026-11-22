@@ -57,8 +57,8 @@ jobs:
           j = json.loads(pathlib.Path("launcher/param.json").read_text(encoding="utf-8"))
           assert j["titleId"] == "P5SV00001"
           assert j["deeplinkUri"] == "http://127.0.0.1:8755/"
-          assert j["contentId"] == "IV9999-P5SV00001_00-PS5SAVEPLUS00001"
-          assert j["applicationDrmType"] == "free"
+          assert set(j) == {"titleId", "applicationCategoryType", "deeplinkUri", "localizedParameters"}, "Launcher must use proven minimal metadata"
+          assert j["applicationCategoryType"] == 65536
           assert j["localizedParameters"]["en-US"]["titleName"] == "PS5Save+"
           PY
           node --check /tmp/ps5save-dashboard.js
