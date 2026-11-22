@@ -2603,6 +2603,7 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
  * but use their own bundle so completion supersedes ONLY the prior percentage.
  */
 static void usb_progress_notification(unsigned percent) {
+  atomic_store(&storage_migration_percent, percent);
   char msg[96];
   snprintf(msg, sizeof msg, "USB transfer progress: %u%%", percent);
   if(!notification_allowed(NOTICE_INFO)) return;
