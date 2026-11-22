@@ -3029,24 +3029,82 @@ acquire_lock(void) {
 }
 
 
+/* After standby the old exclusive-instance listener can be stale even if
+ * the process survives. Rebind it without replacing or stopping another
+ * process. If another instance owns the port, this instance must stop. */
+#ifndef BACKUP_HOST_TEST
+static int restore_instance_lock(int *lock) {
+  if(*lock >= 0) close(*lock);
+  *lock = -1;
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if(fd < 0) return -1;
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+  struct sockaddr_in addr = {0};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(LOCK_PORT);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if(bind(fd, (struct sockaddr *)&addr, sizeof addr) || listen(fd, 1)) {
+    logq("PS5Save+ instance lock could not be restored (%s).", strerror(errno));
+    close(fd);
+    return -1;
+  }
+  *lock = fd;
+  logq("PS5Save+ instance lock restored after standby.");
+  return 0;
+}
+#endif
+
 /**
  * Wait on monotonic interval deadlines, with short checks for closed queued
  * titles. A close retry does not reset the next regular backup deadline.
  **/
-/* 0 = regular deadline, 1 = replacement requested, 2 = queued title closed. */
-static int
-wait_until(double due, int lock) {
+/* 0 = regular deadline; 1 = replacement requested; 2 = queued title closed;
+ * 3 = exclusive lock could not be restored, so exit rather than risk two
+ * independent backup writers. */
+static int wait_until(double due, int *lock) {
   for(;;) {
+#ifndef BACKUP_HOST_TEST
+    if(backup_resume_requested) {
+      backup_resume_requested = 0;
+      if(restore_instance_lock(lock)) return 3;
+    }
+    /* Detect invalidated lock sockets even without a resume signal. */
+    struct pollfd check = {.fd = *lock, .events = POLLIN, .revents = 0};
+    int state = poll(&check, 1, 0);
+    if(state < 0 && errno != EINTR) return 3;
+    if(state > 0) {
+      if(check.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        if(restore_instance_lock(lock)) return 3;
+      } else if(check.revents & POLLIN) {
+        int c = accept(*lock, NULL, NULL);
+        if(c >= 0) close(c);
+        return 1;
+      }
+    }
+#endif
     double remaining = due - now_seconds();
     if(remaining <= 0) return 0;
     int slice = pending_titles ? CLOSE_POLL_SEC : SLICE_SEC;
     if(pending_ready()) return 2;
     int ms = remaining > slice ? slice * 1000 : (int)(remaining * 1000) + 1;
-    struct pollfd pfd = {lock, POLLIN, 0};
-    if(poll(&pfd, lock >= 0 ? 1 : 0, ms) > 0 && (pfd.revents & POLLIN)) {
-      int c = accept(lock, 0, 0);
-      if(c >= 0) close(c);
-      return 1;
+    struct pollfd pfd = {.fd = *lock, .events = POLLIN, .revents = 0};
+    int ready = poll(&pfd, *lock >= 0 ? 1 : 0, ms);
+    if(ready < 0) {
+      if(errno == EINTR) continue;
+      return 3;
+    }
+    if(ready > 0) {
+      if(pfd.revents & POLLIN) {
+        int c = accept(*lock, NULL, NULL);
+        if(c >= 0) close(c);
+        return 1;
+      }
+#ifndef BACKUP_HOST_TEST
+      if(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        if(restore_instance_lock(lock)) return 3;
+      }
+#endif
     }
   }
 }
@@ -3162,10 +3220,14 @@ main(void) {
       return EXIT_SUCCESS;
     }
 #endif
-    int wake = wait_until(due, lock);
+    int wake = wait_until(due, &lock);
     if(wake == 1) {
       logq("Previous backup instance stopped.");
       break;
+    }
+    if(wake == 3) {
+      logq("Backup service stopped: exclusive instance lock unavailable.");
+      break; /* Never continue with an unprotected backup writer. */
     }
 
     started = now_seconds();
