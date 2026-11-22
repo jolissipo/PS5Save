@@ -219,7 +219,7 @@ static void dashboard_serve_status(int fd) {
       "\"interval\":%ld,\"notifications\":%d,"
       "\"inGame\":%s,\"usbOnline\":%s,"
       "\"usbFree\":%llu,\"usbTotal\":%llu,"
-      "\"usbDevice\":\"%s\",\"usbMoving\":%s}",
+      "\"usbDevice\":\"%s\",\"usbMoving\":%s,\"usbPercent\":%u}",
       state.running ? "true" : "false",
       state.has_run ? "true" : "false",
       (long long)state.last_run,
@@ -231,9 +231,10 @@ static void dashboard_serve_status(int fd) {
       usb_online ? "true" : "false", free_bytes, total_bytes,
       USB_ROOT,
 #ifdef PS5SAVE_DYNAMIC_STORAGE
-      atomic_load(&storage_migrating) ? "true" : "false"
+      atomic_load(&storage_migrating) ? "true" : "false",
+      atomic_load(&storage_migration_percent)
 #else
-      "false"
+      "false", 0u
 #endif
   );
   if(n < 0 || (size_t)n >= sizeof buf) {
@@ -323,14 +324,6 @@ static void dashboard_serve_log_tail(int fd) {
   dashboard_serve_log_tail_file(fd, storage_log_path);
 #else
   dashboard_serve_log_tail_file(fd, DASHBOARD_DATA_DIR "/events.log");
-#endif
-}
-static void dashboard_serve_installer_log(int fd) {
-#ifdef PS5SAVE_DYNAMIC_STORAGE
-  dashboard_serve_log_tail_file(fd, storage_installer_log);
-#else
-  dashboard_serve_log_tail_file(fd,
-                                DASHBOARD_DATA_DIR "/launcher-installer.log");
 #endif
 }
 
@@ -449,7 +442,6 @@ static void dashboard_request(int fd) {
     else if(!strcmp(path, "/api/config-version")) editor_serve_version(fd);
     else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
     else if(!strcmp(path, "/api/logs")) dashboard_serve_log_tail(fd);
-    else if(!strcmp(path, "/api/installer-log")) dashboard_serve_installer_log(fd);
     else dashboard_text(fd, 404, "Not found");
     return;
   }
