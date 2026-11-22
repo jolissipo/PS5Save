@@ -10,8 +10,21 @@
 #define USB_STAGE_MAGIC "PS5Save+ USB transfer v1\n"
 #define USB_MIGRATION_DEPTH 48
 
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress);
+
 static int usb_transfer_file(const char *source, const char *target,
                              const struct stat *source_st) {
+  struct stat existing;
+  if(!lstat(target, &existing)) {
+    /* Only reuse fully verified regular files from the owned staging tree. */
+    if(!S_ISREG(existing.st_mode)) return -1;
+    if(existing.st_size == source_st->st_size &&
+       !usb_compare_file(source, target, 0)) {
+      progress_advance((uint64_t)source_st->st_size);
+      return 0;
+    }
+  } else if(errno != ENOENT) return -1;
   if(copy_file_keep_time(source, target, source_st)) return -1;
   struct stat after;
   if(lstat(source, &after) || after.st_size != source_st->st_size ||
@@ -24,6 +37,8 @@ static int usb_transfer_tree(const char *source, const char *target,
                              unsigned depth) {
   if(depth >= USB_MIGRATION_DEPTH) return -1;
   if(mkdir(target, 0700) && errno != EEXIST) return -1;
+  struct stat dest_dir;
+  if(lstat(target, &dest_dir) || !S_ISDIR(dest_dir.st_mode)) return -1;
   DIR *d = opendir(source);
   if(!d) return -1;
   int result = 0;
@@ -48,7 +63,8 @@ static int usb_transfer_tree(const char *source, const char *target,
   return result;
 }
 
-static int usb_compare_file(const char *from, const char *to) {
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress) {
   int f = open(from, O_RDONLY | O_NOFOLLOW);
   if(f < 0) return -1;
   int g = open(to, O_RDONLY | O_NOFOLLOW);
@@ -70,7 +86,7 @@ static int usb_compare_file(const char *from, const char *to) {
     if(result || memcmp(a, b, (size_t)n)) {result = -1;break;}
     /* Verification is half of the transfer work, not an unmeasured pause
      * after copying has reached 50%. */
-    progress_advance((uint64_t)n);
+    if(credit_progress) progress_advance((uint64_t)n);
   }
   if(!result) {
     unsigned char tail;
@@ -101,16 +117,33 @@ static int usb_verify_tree(const char *source, const char *target,
       result = usb_verify_tree(from, to, depth + 1);
     else if(S_ISREG(src.st_mode) && S_ISREG(dst.st_mode) &&
             src.st_size == dst.st_size)
-      result = usb_compare_file(from, to);
+      result = usb_compare_file(from, to, 1);
     else result = -1;
     errno = 0;
   }
   if(!entry && errno) result = -1;
   closedir(d);
+  if(result) return result;
+
+  /* A recovered stage may contain stale files. Do not silently commit them. */
+  DIR *staged = opendir(target);
+  if(!staged) return -1;
+  errno = 0;
+  while(!result && (entry = readdir(staged))) {
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+       (!depth && !strcmp(entry->d_name, USB_STAGE_MARK))) continue;
+    char from[PATH_MAX];
+    struct stat expected;
+    if(snprintf(from, sizeof from, "%s/%s", source, entry->d_name) >=
+       (int)sizeof from || lstat(from, &expected)) result = -1;
+    errno = 0;
+  }
+  if(!entry && errno) result = -1;
+  closedir(staged);
   return result;
 }
 
-static int usb_target_ready(const char *target) {
+static int usb_target_ready(const char *target, const char *validated_stage) {
   uint64_t free_bytes;
   if(!storage_usb_online(target, &free_bytes, NULL)) return 0;
   struct stat from, to;
@@ -122,7 +155,10 @@ static int usb_target_ready(const char *target) {
   if(from.st_dev == to.st_dev) return 0;
 #endif
   uint64_t needed = dir_size(STORAGE_ROOT) + SPACE_MARGIN;
-  return free_bytes > needed;
+  /* Reused bytes already occupy the destination drive. */
+  uint64_t staged = validated_stage ? dir_size(validated_stage) : 0;
+  if(staged > needed) staged = needed;
+  return free_bytes > needed - staged;
 }
 
 static int usb_migrate_to_unlocked(const char *target) {
@@ -132,10 +168,9 @@ static int usb_migrate_to_unlocked(const char *target) {
     return -1;
   }
   if(!strcmp(target, USB_ROOT)) return 0;
-  if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
-     !usb_target_ready(target)) {
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
     snprintf(storage_move_error, sizeof storage_move_error,
-             "Destination USB unavailable or has insufficient free space.");
+             "Source USB is not mounted.");
     return -1;
   }
   char source[PATH_MAX], destination[PATH_MAX], stage[PATH_MAX];
@@ -152,18 +187,32 @@ static int usb_migrate_to_unlocked(const char *target) {
   }
   if(errno != ENOENT) return -1;
 
+  int recovering = 0;
   if(!lstat(stage, &st)) {
-    /* Never delete an unrecognised folder from someone else's USB. */
+    /* Recover only an owned partial transfer. Never delete unknown data. */
     char marker[PATH_MAX], contents[64] = "";
-    snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK);
-    FILE *f = fopen(marker, "r");
-    if(f) {fgets(contents, sizeof contents, f);fclose(f);}
-    if(strcmp(contents, USB_STAGE_MAGIC) || remove_tree(stage)) {
+    if(!S_ISDIR(st.st_mode) ||
+       snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK) >= (int)sizeof marker) {
       snprintf(storage_move_error, sizeof storage_move_error,
-               "Unexpected previous transfer directory; refusing to delete.");
+               "Unexpected transfer path; original preserved.");
       return -1;
     }
+    FILE *f = fopen(marker, "r");
+    if(f) {fgets(contents, sizeof contents, f);fclose(f);}
+    if(strcmp(contents, USB_STAGE_MAGIC)) {
+      snprintf(storage_move_error, sizeof storage_move_error,
+               "Unrecognized partial transfer; original preserved.");
+      return -1;
+    }
+    recovering = 1;
   } else if(errno != ENOENT) return -1;
+
+  if(!usb_target_ready(target, recovering ? stage : NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Destination USB unavailable or has insufficient free space.");
+    return -1;
+  }
+  if(recovering) logq("USB transfer: recovering staged files in %s", stage);
 
   /* Announce only after preflight checks have passed. Dynamic dashboard
    * status stays available throughout the copy and verification. */
@@ -174,34 +223,37 @@ static int usb_migrate_to_unlocked(const char *target) {
   atomic_store(&storage_migrating, 1);
   usb_transfer_notice(0, notice);
   int ok = 0;
-  if(!mkdir(stage, 0700)) {
+  if(recovering || !mkdir(stage, 0700)) {
     char marker[PATH_MAX];
     snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK);
-    FILE *f = fopen(marker, "w");
-    if(f) {
-      int written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
-      if(fclose(f)) written = 0;
-      if(written) {
+    int written = recovering;
+    if(!recovering) {
+      FILE *f = fopen(marker, "w");
+      if(f) {
+        written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
+        if(fclose(f)) written = 0;
+      }
+    }
+    if(written) {
 #ifndef PS5SAVE_USB_TEST
-        uint64_t size = dir_size(source);
-        progress_reset();
-        progress_plan(1);
-        /* Copy and byte-for-byte verification each contribute half. */
-        progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
-        progress_start(usb_progress_notification);
+      uint64_t size = dir_size(source);
+      progress_reset();
+      progress_plan(1);
+      /* Copy and byte-for-byte verification each contribute half. */
+      progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
+      progress_start(usb_progress_notification);
 #endif
-        int verified = !usb_transfer_tree(source, stage, 0) &&
-            !usb_verify_tree(source, stage, 0) &&
-            storage_usb_online(USB_ROOT, NULL, NULL) &&
-            storage_usb_online(target, NULL, NULL);
+      int verified = !usb_transfer_tree(source, stage, 0) &&
+          !usb_verify_tree(source, stage, 0) &&
+          storage_usb_online(USB_ROOT, NULL, NULL) &&
+          storage_usb_online(target, NULL, NULL);
 #ifndef PS5SAVE_USB_TEST
-        progress_finish();
-        progress_stop(); /* Join the worker before any terminal toast. */
+      progress_finish();
+      progress_stop(); /* Join the worker before any terminal toast. */
 #endif
-        if(verified) {
-          sync();
-          if(!rename(stage, destination)) ok = 1;
-        }
+      if(verified) {
+        sync();
+        if(!rename(stage, destination)) ok = 1;
       }
     }
   }

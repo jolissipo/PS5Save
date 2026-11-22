@@ -4,9 +4,14 @@
  */
 #ifndef PS5SAVE_PLUS_DASHBOARD_H
 #define PS5SAVE_PLUS_DASHBOARD_H
+#include <signal.h>
+#include <stdatomic.h>
+#include <poll.h>
 #ifndef BACKUP_HOST_TEST
 
+#ifndef DASHBOARD_PORT
 #define DASHBOARD_PORT 8755
+#endif
 #ifdef PS5SAVE_DYNAMIC_STORAGE
 #define DASHBOARD_DATA_DIR STORAGE_ROOT
 #define DASHBOARD_HISTORY storage_history_path
@@ -51,6 +56,18 @@ typedef struct {
 
 static pthread_mutex_t dashboard_mutex = PTHREAD_MUTEX_INITIALIZER;
 static dashboard_state_t dashboard_state;
+
+/* The kernel may leave the process alive after standby while its old TCP
+ * listener is unusable. SIGCONT only sets a flag; the dashboard thread
+ * performs all socket teardown/rebind work outside the signal handler. */
+static volatile sig_atomic_t dashboard_resume_requested;
+static volatile sig_atomic_t backup_resume_requested;
+static atomic_uint dashboard_listener_restores;
+static void dashboard_on_continue(int signal_number) {
+  (void)signal_number;
+  dashboard_resume_requested = 1;
+  backup_resume_requested = 1;
+}
 
 static void dashboard_set_running(int value) {
   pthread_mutex_lock(&dashboard_mutex);
@@ -492,27 +509,10 @@ static void dashboard_request(int fd) {
   }
 }
 
-static void *dashboard_worker(void *arg) {
-  int server = (int)(intptr_t)arg;
-  for(;;) {
-    int client = accept(server, NULL, NULL);
-    if(client < 0) {
-      if(errno == EINTR) continue;
-      break;
-    }
-    struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-    dashboard_request(client);
-    close(client);
-  }
-  close(server);
-  return NULL;
-}
-
-static void dashboard_start(void) {
+/* This socket may need to be recreated after sleep or a network reset. */
+static int dashboard_listen_socket(void) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if(fd < 0) return;
+  if(fd < 0) return -1;
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   struct sockaddr_in addr = {0};
@@ -521,21 +521,89 @@ static void dashboard_start(void) {
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   if(bind(fd, (struct sockaddr *)&addr, sizeof addr) ||
      listen(fd, 8)) {
-    logq("PS5Save+ dashboard unavailable on TCP %d: %s",
-         DASHBOARD_PORT, strerror(errno));
+    int error = errno;
     close(fd);
-    return;
+    errno = error;
+    return -1;
   }
+  return fd;
+}
+
+static void *dashboard_worker(void *arg) {
+  int server = (int)(intptr_t)arg;
+  for(;;) {
+    if(dashboard_resume_requested) {
+      dashboard_resume_requested = 0;
+      if(server >= 0) {
+        shutdown(server, SHUT_RDWR);
+        close(server);
+        server = -1;
+      }
+      logq("PS5Save+ dashboard: console resumed; reopening HTTP listener.");
+      /* The PS5 network stack can still be restoring its interfaces. */
+      sleep(1);
+    }
+    if(server < 0) {
+      server = dashboard_listen_socket();
+      if(server < 0) {
+        /* Do not terminate the daemon just because the network is absent. */
+        sleep(2);
+        continue;
+      }
+      atomic_fetch_add(&dashboard_listener_restores, 1);
+      logq("PS5Save+ dashboard: HTTP listener restored on port %d.", DASHBOARD_PORT);
+    }
+    struct pollfd pfd = {.fd = server, .events = POLLIN, .revents = 0};
+    int ready = poll(&pfd, 1, 1500);
+    if(ready < 0) {
+      if(errno == EINTR) continue;
+      logq("PS5Save+ dashboard: socket poll failed (%s).", strerror(errno));
+      close(server);
+      server = -1;
+      continue;
+    }
+    if(!ready) continue;
+    if(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      logq("PS5Save+ dashboard: listener invalidated; reconnecting.");
+      close(server);
+      server = -1;
+      continue;
+    }
+    if(!(pfd.revents & POLLIN)) continue;
+    int client = accept(server, NULL, NULL);
+    if(client < 0) {
+      if(errno == EINTR || errno == ECONNABORTED) continue;
+      logq("PS5Save+ dashboard: accept failed (%s).", strerror(errno));
+      close(server);
+      server = -1;
+      continue;
+    }
+    struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    dashboard_request(client);
+    close(client);
+  }
+  return NULL;
+}
+
+static void dashboard_start(void) {
+  signal(SIGCONT, dashboard_on_continue);
+  int fd = dashboard_listen_socket();
+  if(fd < 0)
+    logq("PS5Save+ dashboard: initial HTTP listener unavailable (%s); recovery enabled.",
+         strerror(errno));
   pthread_t thread;
   int rc = pthread_create(&thread, NULL, dashboard_worker,
                           (void *)(intptr_t)fd);
   if(rc) {
     logq("PS5Save+ dashboard thread unavailable: %s", strerror(rc));
-    close(fd);
+    if(fd >= 0) close(fd);
     return;
   }
   pthread_detach(thread);
-  logq("PS5Save+ dashboard listening on TCP %d (read-only)", DASHBOARD_PORT);
+  if(fd >= 0) logq("PS5Save+ dashboard listening on TCP %d (read-only)", DASHBOARD_PORT);
 }
+
 #endif /* !BACKUP_HOST_TEST */
 #endif /* PS5SAVE_PLUS_DASHBOARD_H */
