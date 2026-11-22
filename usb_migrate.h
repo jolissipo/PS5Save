@@ -123,7 +123,12 @@ static int usb_target_ready(const char *target) {
 }
 
 static int usb_migrate_to_unlocked(const char *target) {
-  if(storage_usb_number(target) < 0 || !strcmp(target, USB_ROOT)) return 0;
+  if(storage_usb_number(target) < 0) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Only mounted USB drives can be backup destinations.");
+    return -1;
+  }
+  if(!strcmp(target, USB_ROOT)) return 0;
   if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
      !usb_target_ready(target)) {
     snprintf(storage_move_error, sizeof storage_move_error,
