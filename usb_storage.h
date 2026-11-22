@@ -6,7 +6,7 @@
 #define STORAGE_ACTIVE_MARKER ".ps5save-active"
 
 static char storage_requested_usb[32] = "";
-static int storage_migrating;
+static atomic_int storage_migrating;
 static char storage_move_error[256] = "";
 
 static int storage_usb_number(const char *path) {
@@ -109,7 +109,11 @@ static int storage_mark_active(void) {
   char mark[PATH_MAX];
   if(snprintf(mark, sizeof mark, "%s/%s", STORAGE_ROOT,
               STORAGE_ACTIVE_MARKER) >= (int)sizeof mark) return -1;
-  int fd = open(mark, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  struct stat existing;
+  if(!lstat(mark, &existing))
+    return S_ISREG(existing.st_mode) ? 0 : -1;
+  if(errno != ENOENT) return -1;
+  int fd = open(mark, O_CREAT | O_WRONLY | O_EXCL, 0600);
   if(fd < 0) return -1;
   int n = dprintf(fd, "%s\n", USB_ROOT);
   int rc = n > 0 && !fsync(fd) ? 0 : -1;
