@@ -55,13 +55,13 @@ Prerequisites: PS5 on the supported exploit/payload-loader setup, a **spare USB 
 The separate installer changes console application metadata. Before running it:
 
 - Review the chosen title ID `P5SV00001` for collisions with installed content.
-- Download the **latest** `launcher-installer.elf` from the successful GitHub Actions development artifact (not an earlier extracted ELF). Run this file specifically; `backup.elf` does not install an icon.
+- Download the **latest** `launcher-installer-v3.elf` from the successful GitHub Actions development artifact (not an earlier extracted ELF). Run this file specifically; `backup.elf` does not install an icon.
 - The installer now emits **Debug notifications** and writes a persistent diagnostic log: `/mnt/usb0/ps5save-plus/launcher-installer.log`, with fallback `/data/ps5save-plus-launcher.log`. If the backup dashboard is running, open **Overview → Launcher installer logs** to read the USB log.
 - If no Debug notification appears, inspect the log **before** repeating installation. If neither log was written, the process may have failed to start or the wrong ELF may have been sent. If the log records `sceKernelSendNotificationRequest failed`, the notification transport is at fault; if it contains `sceAppInstUtil...`, the registration failure code identifies the next check.
 - Confirm the SDK registration API on firmware 11.60, and verify that `/user/app/` is present. Missing `/user/app/` is a verified cause of similar failures (Payload Manager PR #108); the installer now creates that parent directory if absent. The title metadata is deliberately minimal, matching other working PS5 web launchers.
 - Confirm the icon opens `http://127.0.0.1:8755/` and that it stays functional after console reboot and rest mode. A second installer execution must report an existing registration and avoid reinstalling.
 - Design and validate **safe uninstall/rollback** using Sony's app-management interface. No automatic uninstall exists in this branch.
-- Only then test the dedicated `launcher-installer.elf` with a backup of relevant console state.
+- Only then test the dedicated `launcher-installer-v3.elf` with a backup of relevant console state.
 
 ## Validation status
 
