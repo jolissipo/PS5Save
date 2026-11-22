@@ -83,7 +83,9 @@ static int notification_json_escape(char *dst, size_t cap, const char *src) {
       dst[used++]=(char)*p;
     }
   }
-  if(used>=cap)return 0;dst[used]=0;return 1;
+  if(used>=cap) return 0;
+  dst[used]=0;
+  return 1;
 }
 
 #include "../dashboard.h"
@@ -115,6 +117,48 @@ static void make_request(const char *request, const char *expected) {
   }
 }
 
+
+
+static void test_file_browser(void) {
+  assert(!mkdir_p(BACKUP_ROOT "/saves/ps5"));
+  write_file(BACKUP_ROOT "/saves/ps5/PPSA12345", "TEST");
+  write_file(DAILY_ROOT "/2026-11-22/snapshot.dat", "copy");
+  make_request("GET /api/tree?root=live HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"name\":\"saves\"");
+  make_request("GET /api/tree?root=live&path=saves%2Fps5 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"name\":\"PPSA12345\"");
+  make_request("GET /api/summary?root=live HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"files\":1");
+  make_request("GET /api/summary?root=snapshot&date=2026-11-22 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"bytes\":4");
+  make_request("GET /api/tree?root=snapshot&date=2026-11-22 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"name\":\"snapshot.dat\"");
+  make_request("GET /api/tree?root=snapshot&date=2026-11-22&path=.. HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "400 Bad Request");
+  make_request("GET /api/tree?root=live&path=saves%2F.. HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "400 Bad Request");
+  make_request("GET /api/tree?root=live&path=%00 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "400 Bad Request");
+  make_request("GET /api/tree?root=live&path=%2fetc HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "400 Bad Request");
+  assert(!symlink("/etc", BACKUP_ROOT "/outside"));
+  make_request("GET /api/tree?root=live&path=outside HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "400 Bad Request");
+
+  /* A large directory must be browsable beyond the initial 64 results. */
+  for(int i=0;i<72;i++) {
+    char path[PATH_MAX];
+    assert(snprintf(path,sizeof path,"%s/item%03d",BACKUP_ROOT,i) < (int)sizeof path);
+    write_file(path,"x");
+  }
+  make_request("GET /api/tree?root=live HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"next\":\"Fitem062\"");
+  make_request("GET /api/tree?root=live&after=Fitem062 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"name\":\"item071\"");
+  make_request("GET /api/tree?root=live&after=Fitem062 HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"next\":null");
+  puts("PASS dashboard tree pagination, snapshot inventory and path confinement");
+}
 
 static void test_config_editor(void) {
   const char *pair =
@@ -263,6 +307,7 @@ int main(void) {
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "404 Not Found");
   test_config_editor();
+  test_file_browser();
   puts("PASS dashboard endpoints, persisted history and write security");
   return 0;
 }
