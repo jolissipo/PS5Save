@@ -64,13 +64,18 @@ assert.match(html, /name="max_title_size_mb"[^>]*\brequired\b/);
 assert.match(html, /if\(!form\.checkValidity\(\)\)/);
 
 
-/* Test actual transfer tab logic with a minimal DOM, including transfer
- * startup while Settings is visible and restoration after it completes. */
+/* Test the actual busy-state logic for both backup checks and USB transfers,
+ * including an already-open Settings tab and a paired browser. */
+const preferenceControls = [{disabled: false}, {disabled: false}];
+const pairControls = [{disabled: false}, {disabled: false}];
 const sections = {
   settings: {hidden: false}, overview: {hidden: true},
-  preferences: {querySelectorAll: () => preferenceControls}
+  preferences: {querySelectorAll: () => preferenceControls},
+  pairForm: {querySelectorAll: () => pairControls},
+  rawConfig: {disabled: false},
+  saveRaw: {disabled: false},
+  requestPair: {disabled: false}
 };
-const preferenceControls = [{disabled: false}, {disabled: false}];
 function tab(name, pressed) {
   return {
     disabled: false,
@@ -92,23 +97,45 @@ context.document = {
     return [overviewTab, settingsTab];
   }
 };
+context.sessionToken="";
+context.settingsBusy=false;
 vm.runInContext(
-  extractFunction("syncTransferEditing", "status"),
+  extractFunction("syncBusyEditing", "status"),
   context, {filename: "dashboard-tabs.js"}
 );
-context.syncTransferEditing(true);
+context.syncBusyEditing(true);
 assert.equal(settingsTab.disabled, true);
 assert.equal(sections.settings.hidden, true);
 assert.equal(sections.overview.hidden, false);
 assert.equal(settingsTab.getAttribute("aria-pressed"), "false");
 assert.equal(overviewTab.getAttribute("aria-pressed"), "true");
 assert.ok(preferenceControls.every(control => control.disabled));
-context.syncTransferEditing(false);
+assert.ok(pairControls.every(control => control.disabled));
+assert.equal(sections.rawConfig.disabled, true);
+assert.equal(sections.saveRaw.disabled, true);
+assert.equal(sections.requestPair.disabled, true);
+context.syncBusyEditing(false);
 assert.equal(settingsTab.disabled, false);
 assert.ok(preferenceControls.every(control => !control.disabled));
+assert.ok(pairControls.every(control => !control.disabled));
+assert.equal(sections.rawConfig.disabled, false);
+assert.equal(sections.saveRaw.disabled, false);
+assert.equal(sections.requestPair.disabled, false);
+context.sessionToken="paired-browser";
+context.syncBusyEditing(false);
+assert.equal(sections.requestPair.disabled, true, "pairing remains independent");
+context.sessionToken="";
+sections.settings.hidden=false;
+sections.overview.hidden=true;
+context.syncBusyEditing(true); /* Same lock for USB transfer. */
+assert.equal(settingsTab.disabled, true);
+context.syncBusyEditing(false);
 assert.match(html, /if\(button\.disabled\)return;/);
-assert.match(html, /Settings is temporarily disabled\./);
-console.log("PASS dashboard configuration and USB-transfer Settings lock");
+assert.match(html, /busy=!!\(x\.usbMoving \|\| x\.running\)/);
+assert.match(html, /Backup in progress\. You can view the dashboard and logs; Settings is temporarily disabled\./);
+assert.match(html, /USB backup transfer in progress/);
+assert.match(html, /setInterval\(status,3000\)/);
+console.log("PASS Settings lock during backup checks and USB transfers");
 
 /* The editing indicator belongs to this page's token, not a global console
  * flag. Another browser starts locked and can authorize independently. */
@@ -117,6 +144,7 @@ const editorNodes={
   pairForm:{hidden:false},settingsForm:{hidden:true},advanced:{hidden:true}
 };
 context.byId = id => editorNodes[id];
+context.settingsBusy = false;
 vm.runInContext(extractFunction("setEditingState","verifyEditorSession"),context,
   {filename:"dashboard-editor-state.js"});
 context.setEditingState(true);
