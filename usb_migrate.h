@@ -10,8 +10,21 @@
 #define USB_STAGE_MAGIC "PS5Save+ USB transfer v1\n"
 #define USB_MIGRATION_DEPTH 48
 
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress);
+
 static int usb_transfer_file(const char *source, const char *target,
                              const struct stat *source_st) {
+  struct stat existing;
+  if(!lstat(target, &existing)) {
+    /* Only reuse fully verified regular files from the owned staging tree. */
+    if(!S_ISREG(existing.st_mode)) return -1;
+    if(existing.st_size == source_st->st_size &&
+       !usb_compare_file(source, target, 0)) {
+      progress_advance((uint64_t)source_st->st_size);
+      return 0;
+    }
+  } else if(errno != ENOENT) return -1;
   if(copy_file_keep_time(source, target, source_st)) return -1;
   struct stat after;
   if(lstat(source, &after) || after.st_size != source_st->st_size ||
@@ -24,6 +37,8 @@ static int usb_transfer_tree(const char *source, const char *target,
                              unsigned depth) {
   if(depth >= USB_MIGRATION_DEPTH) return -1;
   if(mkdir(target, 0700) && errno != EEXIST) return -1;
+  struct stat dest_dir;
+  if(lstat(target, &dest_dir) || !S_ISDIR(dest_dir.st_mode)) return -1;
   DIR *d = opendir(source);
   if(!d) return -1;
   int result = 0;
@@ -48,7 +63,8 @@ static int usb_transfer_tree(const char *source, const char *target,
   return result;
 }
 
-static int usb_compare_file(const char *from, const char *to) {
+static int usb_compare_file(const char *from, const char *to,
+                            int credit_progress) {
   int f = open(from, O_RDONLY | O_NOFOLLOW);
   if(f < 0) return -1;
   int g = open(to, O_RDONLY | O_NOFOLLOW);
@@ -70,7 +86,7 @@ static int usb_compare_file(const char *from, const char *to) {
     if(result || memcmp(a, b, (size_t)n)) {result = -1;break;}
     /* Verification is half of the transfer work, not an unmeasured pause
      * after copying has reached 50%. */
-    progress_advance((uint64_t)n);
+    if(credit_progress) progress_advance((uint64_t)n);
   }
   if(!result) {
     unsigned char tail;
@@ -101,7 +117,7 @@ static int usb_verify_tree(const char *source, const char *target,
       result = usb_verify_tree(from, to, depth + 1);
     else if(S_ISREG(src.st_mode) && S_ISREG(dst.st_mode) &&
             src.st_size == dst.st_size)
-      result = usb_compare_file(from, to);
+      result = usb_compare_file(from, to, 1);
     else result = -1;
     errno = 0;
   }
