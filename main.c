@@ -209,7 +209,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v0.1.0-alpha"
+#define PS5SAVE_RELEASE "v0.1.1-alpha"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -2839,20 +2839,26 @@ run_cycle(int pending_only) {
   }
 #endif
 
-  if(!(f = fopen(CONF_PATH, "r"))) {
-    logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
-    return -1;
-  }
-
 #ifndef BACKUP_HOST_TEST
+  /* Lock Settings before the first configuration read. */
   dashboard_set_running(1);
 #endif
+  if(!(f = fopen(CONF_PATH, "r"))) {
+    logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
+#ifndef BACKUP_HOST_TEST
+    dashboard_set_running(0);
+#endif
+    return -1;
+  }
   progress_reset();
   /* Apply the policy before sending the scan status, including when it is
    * declared after file paths in backup.conf. This pass reads only settings. */
   if(!notification_config_read(f) || fseek(f, 0, SEEK_SET)) {
     logq("Cannot read or rewind %s: %s", CONF_PATH, strerror(errno));
     fclose(f);
+#ifndef BACKUP_HOST_TEST
+    dashboard_set_running(0);
+#endif
     return -2;
   }
   notification_issues_begin(pending_only);
@@ -2897,6 +2903,9 @@ run_cycle(int pending_only) {
   if(fseek(f, 0, SEEK_SET)) {
     logq("Cannot rewind %s: %s", CONF_PATH, strerror(errno));
     fclose(f);
+#ifndef BACKUP_HOST_TEST
+    dashboard_set_running(0);
+#endif
     return -2;
   }
   memset(&stats, 0, sizeof stats);
