@@ -203,6 +203,9 @@ static char storage_installer_log[PATH_MAX] = "/mnt/usb0/ps5save-plus/launcher-i
  * sceKernelSendNotificationRequest is the legacy debug-popup mechanism;
  * sceNotificationSend accepts the shell's rich JSON notification model. */
 int sceNotificationSend(int user_id, bool is_logged, const char *payload);
+#ifndef BACKUP_HOST_TEST
+int sceSystemServicePowerTick(void);
+#endif
 #define NOTIFICATION_USER_ID 0xfe /* same local/broadcast user as SMP */
 #define NOTIFICATION_JSON_SIZE 16384
 
