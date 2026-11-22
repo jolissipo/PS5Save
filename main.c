@@ -104,8 +104,50 @@ along with this program; see the file COPYING. If not, see
 #include <ps5/klog.h>
 
 
+/* PS5 exposes up to eight external USB mount points. On the console the
+ * selected paths are mutable and change ONLY between backup passes. Host
+ * fixtures retain compile-time literal paths to exercise the backup engine. */
+#ifndef BACKUP_HOST_TEST
+#define PS5SAVE_DYNAMIC_STORAGE 1
+static char storage_usb_path[32] = "/mnt/usb0";
+static char storage_root_path[PATH_MAX] = "/mnt/usb0/ps5save-plus";
+static char storage_conf_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf";
+static char storage_backup_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup";
+static char storage_daily_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup_daily";
+static char storage_legacy_conf[PATH_MAX] = "/mnt/usb0/backup.conf";
+static char storage_legacy_bak[PATH_MAX] = "/mnt/usb0/backup.conf.bak";
+static char storage_legacy_backup[PATH_MAX] = "/mnt/usb0/backup";
+static char storage_legacy_daily[PATH_MAX] = "/mnt/usb0/backup_daily";
+static char storage_conf_bak[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.bak";
+static char storage_conf_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.part";
+static char storage_log_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log";
+static char storage_log_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log.1";
+static char storage_history_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv";
+static char storage_history_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv.1";
+static char storage_index_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index";
+static char storage_index_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index.part";
+static char storage_installer_log[PATH_MAX] = "/mnt/usb0/ps5save-plus/launcher-installer.log";
+#define USB_ROOT storage_usb_path
+#define STORAGE_ROOT storage_root_path
+#define CONF_PATH storage_conf_path
+#define BACKUP_ROOT storage_backup_path
+#define DAILY_ROOT storage_daily_path
+#define LEGACY_CONF_PATH storage_legacy_conf
+#define LEGACY_CONF_BAK storage_legacy_bak
+#define LEGACY_BACKUP_ROOT storage_legacy_backup
+#define LEGACY_DAILY_ROOT storage_legacy_daily
+#else
 #ifndef USB_ROOT
 #define USB_ROOT      "/mnt/usb0"
+#endif
+#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
+#define CONF_PATH     STORAGE_ROOT "/backup.conf"
+#define BACKUP_ROOT   STORAGE_ROOT "/backup"
+#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
+#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
+#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
+#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
+#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #endif
 #ifndef HOME_ROOT
 #define HOME_ROOT     "/user/home"
@@ -120,14 +162,6 @@ along with this program; see the file COPYING. If not, see
 #define PFSMGR_DEV    "/dev/pfsmgr"
 #endif
 
-#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
-#define CONF_PATH     STORAGE_ROOT "/backup.conf"
-#define BACKUP_ROOT   STORAGE_ROOT "/backup"
-#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
-#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
-#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
-#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
-#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #define MAX_DAILY     10      /* highest value for daily_snapshots_to_keep= */
 #define MAX_DAILY_DIRS 1024   /* date folders looked at when pruning */
 #define TMP_IMG       TMP_DIR "/_backup_tmp_image"
