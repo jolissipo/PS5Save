@@ -371,15 +371,15 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     var button=byId("requestPair");
     button.disabled=enabled;
     button.textContent=enabled?"Editing already enabled":"Unlock editing on PS5";
-    byId("pairForm").hidden=enabled;
+    byId("pairForm").hidden=true;
     byId("settingsForm").hidden=!enabled;
     byId("advanced").hidden=!enabled;
   }
   function verifyEditorSession(){
     if(!sessionToken)return;
     var checked=sessionToken;
-    post("/api/session","",{"X-PS5Save-Session":checked}).catch(function(){
-      if(sessionToken!==checked)return; /* A newer local pairing won this race. */
+    post("/api/session","",{"X-PS5Save-Session":checked}).catch(function(error){
+      if(error.status!==403 || sessionToken!==checked)return;
       sessionToken="";
       setEditingState(false);
       text("pairMessage","Editing session expired. Unlock editing on PS5 again.");
@@ -444,7 +444,10 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     var headers={"X-PS5Save-Request":"1","Content-Type":"text/plain; charset=utf-8"};
     if(extra)Object.keys(extra).forEach(function(k){headers[k]=extra[k];});
     return fetch(path,{method:"POST",headers:headers,body:body}).then(function(r){
-      return r.text().then(function(s){if(!r.ok)throw Error(s||("HTTP "+r.status));return s;});
+      return r.text().then(function(s){
+        if(!r.ok){var error=Error(s||("HTTP "+r.status));error.status=r.status;throw error;}
+        return s;
+      });
     });
   }
   function replaceKey(original,key,value){
