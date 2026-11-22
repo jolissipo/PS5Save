@@ -17,14 +17,14 @@ along with this program; see the file COPYING. If not, see
 /**
  * Save backup daemon for PS5.
  *
- * Reads /mnt/usb0/backup.conf and copies the listed files to
- * /mnt/usb0/backup/<original path>:
+ * Reads /mnt/usb0/ps5save-plus/backup.conf (creating it if missing) and
+ * copies the listed files to /mnt/usb0/ps5save-plus/backup/<original path>:
  *
  *   /data/PCSX2/Mcd001.ps2        one file
  *   /data/porpoise/saves/<star>   every file and folder below, recursively
  *   backup_interval_seconds=60      seconds between backups (default 60)
  *   backup_notifications=all       all, errors or off (default all)
- *   backup_notifications_in_game=true  allow toasts during possible game activity
+ *   backup_notifications_in_game=false  suppress toasts during possible game activity
  *   backup_ps4_saves=true           enable decrypted PS4 saves (default false)
  *   backup_ps5_saves=true           enable decrypted PS5 saves (default false)
  *   backup_encrypted_saves=true     copy original PS4 and PS5 save files
@@ -34,7 +34,7 @@ along with this program; see the file COPYING. If not, see
  *                                  in decimal MB; default 4096 = 4.096GB
  *   daily_snapshots_to_keep=3       keep a dated snapshot (a copy of the live
  *                                 backup) of the newest N days in
- *                                 /mnt/usb0/backup_daily/YYYY-MM-DD, using the
+ *                                 /mnt/usb0/ps5save-plus/backup_daily/YYYY-MM-DD, using the
  *                                 console's local date. 0..10, default 0 = off.
  *                                 The first run on a date creates its snapshot
  *                                 and it is never overwritten that day; it is
@@ -50,7 +50,7 @@ along with this program; see the file COPYING. If not, see
  *
  * PS4/PS5 saves are encrypted images. For each image that changed, a COPY of
  * the image is mounted (the original is only ever read), the decrypted files
- * are copied to /mnt/usb0/backup/saves/..., and the image is unmounted again.
+ * are copied to /mnt/usb0/ps5save-plus/backup/saves/..., and the image is unmounted again.
  * A title is deferred while that same title is running, suspended or still
  * sandbox-mounted. Other titles may be backed up during gameplay. Activity is
  * checked before mounting and during copying; unknown activity fails closed.
