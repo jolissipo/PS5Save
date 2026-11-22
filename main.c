@@ -2216,10 +2216,21 @@ backup_entry(char *line, backup_stats_t *stats) {
   if(len == 0 || line[0] == '#') {
     return;
   }
+  const char *value;
 
+#ifndef BACKUP_HOST_TEST
+  if((value = config_value(line, "backup_usb_device", NULL))) {
+    if(!strcmp(value, "auto")) storage_requested_usb[0] = 0;
+    else if(storage_usb_number(value) >= 0)
+      snprintf(storage_requested_usb, sizeof storage_requested_usb, "%s", value);
+    else if(!g_progress_planning)
+      notify_problem(NOTICE_WARNING, "usb-invalid", NULL,
+                     "USB selection invalid. Choose /mnt/usb0 through /mnt/usb7.");
+    return;
+  }
+#endif
   /* Keep legacy key aliases for existing backup.conf files. All MB values
    * now mean decimal megabytes, including the legacy max_game_mb key. */
-  const char *value;
   if((value = config_value(line, "backup_interval_seconds", "interval"))) {
     long v;
     if(!config_number(value, MIN_INTERVAL, MAX_INTERVAL, &v)) {
@@ -2788,6 +2799,9 @@ run_cycle(int pending_only) {
   g_backup_busy = 0;
   memset(&stats, 0, sizeof stats);
   start = now_seconds();
+#ifndef BACKUP_HOST_TEST
+  storage_requested_usb[0] = 0;
+#endif
 
   /* Settings are re-read from defaults on every cycle. */
   g_interval = DEF_INTERVAL;
@@ -2870,7 +2884,7 @@ run_cycle(int pending_only) {
     notify_backup_status(1, "Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
-    /* No changes is the normal outcome; avoid repetitive popups. */
+    /* Routine unchanged passes remain silent; startup confirms the scan. */
   }
 
   /* A previously reported failure has actually cleared. For normal mode,
@@ -3019,6 +3033,9 @@ main(void) {
                    "Backup storage layout unavailable. Check USB folders; no backup was started.");
     return EXIT_FAILURE;
   }
+#ifndef BACKUP_HOST_TEST
+  if(storage_mark_active()) logq("Could not write USB selection marker.");
+#endif
 
 #ifndef BACKUP_HOST_TEST
   /* Title registration requires no running web server. Skip silently on later
@@ -3036,7 +3053,7 @@ main(void) {
   }
   /* An initial successful pass is the only time we confirm startup. */
   if(!notification_cycle_failed && !g_backup_busy)
-    notify_info("Backup protection active.");
+    notify_info("Backup up to date. No changes.");
   if(g_daily > 0) {
     /* Log the date and UTC offset the payload sees. */
     clock_info_t ci;
