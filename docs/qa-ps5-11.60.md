@@ -37,6 +37,9 @@ Prerequisites: PS5 on the supported exploit/payload-loader setup, a **spare USB 
 
 - With a separate source **containing dispensable test data**, verify the initial copy, unchanged pass, changed-file copy and preservation of original data.
 - Exercise snapshots with `daily_snapshots_to_keep=2`, verify that completed dated folders do not change within the same day, and verify retention on later dates.
+- In **Backups**, open the live folder tree and a dated snapshot. Check nested filenames, individual sizes, modification dates, and navigation through more than 64 items using **Show more files**.
+- Open each snapshot's inventory; compare counted files and bytes with the actual USB folder. Confirm that any limited or interrupted scan explicitly reports an incomplete inventory, and does not claim all source saves were included.
+- Test a deliberately long backup: after approximately 10 seconds the native toast should show the actual current percent (not 25/50/75 milestones). For longer copies, verify that notification cadence adapts between 10 and 30 seconds, never repeats an unchanged percent, and that quick backups show only completion. Progress is work-unit based, not a byte-accurate throughput measurement.
 - Test low USB free space, a missing source and a write/read failure in a controlled environment. Confirm the notifier gives a useful cause without bursts; verify the persistent log retains details.
 - Verify a previously alerted problem generates only one recovery notice after resolution.
 - With **test-game saves**, verify active/suspended-title deferral, resumption after game exit, decrypted backup, original encrypted backup and expected file consistency.
