@@ -39,9 +39,19 @@ static char storage_usb_path[PATH_MAX], storage_root_path[PATH_MAX],
 #include "../usb_storage.h"
 
 static int rebase_calls, save_calls, notification_calls;
+static int migration_started, migration_finished;
 static void progress_advance(size_t value) {(void)value;}
 static void logq(const char *format, ...) {(void)format;}
-static void notify_info(const char *format, ...) {(void)format;notification_calls++;}
+static void usb_transfer_notice(int complete, const char *message) {
+  notification_calls++;
+  if(complete) {
+    assert(!strcmp(message, "USB transfer complete."));
+    migration_finished++;
+  } else {
+    assert(strstr(message, "Backup USB changed. Copying to "));
+    migration_started++;
+  }
+}
 static void index_rebase_usb(const char *from, const char *to) {
   assert(strstr(from,"/ps5save-plus/backup"));
   assert(strstr(to,"/ps5save-plus/backup"));
@@ -121,6 +131,7 @@ int main(void) {
   make_dirs(first);make_dirs(second);
   assert(storage_usb_number(first)==0 && storage_usb_number(second)==1);
   assert(storage_requested_usb[0] == 0);
+  assert(atomic_load(&storage_migration_percent) == 0);
   assert(storage_usb_number("/data")==-1);
   assert(storage_usb_online(first,NULL,NULL));
   assert(storage_usb_online(second,NULL,NULL));
@@ -158,7 +169,8 @@ int main(void) {
   file_expect(path,"snapshot data");
   snprintf(path,sizeof path,"%s/ps5save-plus",first);
   assert(access(path,F_OK)!=0);
-  assert(rebase_calls==1 && save_calls==1 && notification_calls==1);
+  assert(rebase_calls==1 && save_calls==1 && notification_calls==2);
+  assert(migration_started==1 && migration_finished==1);
 
   /* Attempts to migrate to internal paths must not change anything. */
   assert(usb_migrate_to("/data") != 0); /* internal paths are rejected */
@@ -171,6 +183,39 @@ int main(void) {
   file_expect(path,"USB0 user data");
   assert(!strcmp(USB_ROOT,second));
 
-  puts("PASS USB detection, preferences, full transfer, collision, symlink and source preservation");
+  /* Restart: the only existing backup on USB1 wins, even if USB0 is free. */
+  char warning[1024];
+  assert(!storage_choose_initial_usb() && !strcmp(USB_ROOT, second));
+  assert(!storage_startup_conflict_message(warning, sizeof warning));
+
+  /* If another independent PS5Save+ folder exists, warn and preserve BOTH. */
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup", first);
+  make_dirs(path);
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
+  file_write(path, "backup_usb_device=auto\n");
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/spare.bin", first);
+  file_write(path, "other USB saves");
+  assert(!storage_choose_initial_usb());
+  assert(!strcmp(USB_ROOT, second)); /* USB1's active marker has priority. */
+  assert(storage_startup_conflict_message(warning, sizeof warning));
+  assert(strstr(warning, first) && strstr(warning, second));
+  assert(strstr(warning, "Selected ") && strstr(warning, "Other backups left unchanged."));
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/spare.bin", first);
+  file_expect(path, "other USB saves");
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/file.bin", second);
+  file_expect(path, "USB0 user data");
+
+  /* An explicit preference in the first USB's own config outranks a marker. */
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup.conf", first);
+  char preferred[PATH_MAX + 64];
+  snprintf(preferred, sizeof preferred, "backup_usb_device=%s\n", first);
+  file_write(path, preferred);
+  assert(!storage_choose_initial_usb() && !strcmp(USB_ROOT, first));
+  assert(storage_startup_conflict_message(warning, sizeof warning));
+  assert(strstr(warning, "Other backups left unchanged."));
+  snprintf(path, sizeof path, "%s/ps5save-plus/backup/file.bin", second);
+  file_expect(path, "USB0 user data");
+
+  puts("PASS USB detection, preferences, migration, duplicate-install diagnostics and data preservation");
   return 0;
 }

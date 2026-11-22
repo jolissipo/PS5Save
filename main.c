@@ -209,7 +209,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v0.1.0-alpha.4"
+#define PS5SAVE_RELEASE "v0.1.0-alpha.5"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -2599,6 +2599,28 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
 
 
 #ifndef BACKUP_HOST_TEST
+/* USB transfers share the existing adaptive progress timer and PS5 rich toasts,
+ * but use their own bundle so completion supersedes ONLY the prior percentage.
+ */
+static void usb_progress_notification(unsigned percent) {
+  atomic_store(&storage_migration_percent, percent);
+  char msg[96];
+  snprintf(msg, sizeof msg, "USB transfer progress: %u%%", percent);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(msg, "PS5Save+ USB", "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
+static void usb_transfer_notice(int completion, const char *message) {
+  logq("%s", message);
+  if(!notification_allowed(NOTICE_INFO)) return;
+  pthread_mutex_lock(&notification_mutex);
+  if(notification_settings.in_game || !notification_game_muted())
+    (void)send_notification_with_policy(
+        message, "PS5Save+ USB", completion ? "Always" : "No");
+  pthread_mutex_unlock(&notification_mutex);
+}
 #include "usb_migrate.h"
 #endif
 
@@ -3052,6 +3074,15 @@ main(void) {
     return EXIT_FAILURE;
   }
 #ifndef BACKUP_HOST_TEST
+  /* Only once per ELF launch, after logs are available on the selected USB.
+   * Use cumulative Debug rather than a native backup toast: this is a
+   * storage-selection diagnostic, not a backup result. */
+  char usb_conflict_message[512];
+  if(storage_startup_conflict_message(usb_conflict_message,
+                                      sizeof usb_conflict_message)) {
+    logq("%s", usb_conflict_message);
+    storage_debug(usb_conflict_message);
+  }
   if(storage_mark_active()) logq("Could not write USB selection marker.");
 #endif
 
@@ -3071,10 +3102,11 @@ main(void) {
   }
 #ifndef BACKUP_HOST_TEST
   if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
-    notify_info("Moving backup storage to %s.", storage_requested_usb);
-    if(usb_migrate_to(storage_requested_usb))
-      notify_problem(NOTICE_WARNING, "usb-move", NULL,
-                     "Could not move backup storage: %s", storage_move_error);
+    if(usb_migrate_to(storage_requested_usb)) {
+      logq("USB transfer failed: %s", storage_move_error);
+      notify_problem(NOTICE_ERROR, "usb-move", NULL,
+                     "USB transfer failed. See dashboard logs.");
+    }
   }
 #endif
   /* An initial successful pass is the only time we confirm startup. */
@@ -3124,9 +3156,11 @@ main(void) {
 
 #ifndef BACKUP_HOST_TEST
     if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
-      if(usb_migrate_to(storage_requested_usb))
-        notify_problem(NOTICE_WARNING, "usb-move", NULL,
-                       "Could not move backup storage: %s", storage_move_error);
+      if(usb_migrate_to(storage_requested_usb)) {
+        logq("USB transfer failed: %s", storage_move_error);
+        notify_problem(NOTICE_ERROR, "usb-move", NULL,
+                       "USB transfer failed. See dashboard logs.");
+      }
     }
 #endif
     if(missing >= MISSING_TRIES) {

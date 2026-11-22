@@ -71,7 +71,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <div class="wrap">
 <header>
  <div class="brand"><div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor" focusable="false"><path d="M8.984 2.596v17.547l3.915 1.261V6.688c0-.69.304-1.151.794-.991.636.18.76.814.76 1.505v5.875c2.441 1.193 4.362-.002 4.362-3.152 0-3.237-1.126-4.675-4.438-5.827-1.307-.448-3.728-1.186-5.39-1.502zm4.656 16.241l6.296-2.275c.715-.258.826-.625.246-.818-.586-.192-1.637-.139-2.357.123l-4.205 1.5V14.98l.24-.085s1.201-.42 2.913-.615c1.696-.18 3.785.03 5.437.661 1.848.601 2.04 1.472 1.576 2.072-.465.6-1.622 1.036-1.622 1.036l-8.544 3.107V18.86zM1.807 18.6c-1.9-.545-2.214-1.668-1.352-2.32.801-.586 2.16-1.052 2.16-1.052l5.615-2.013v2.313L4.205 17c-.705.271-.825.632-.239.826.586.195 1.637.15 2.343-.12L8.247 17v2.074c-.12.03-.256.044-.39.073-1.939.331-3.996.196-6.038-.479z"/></svg></div>
- <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.4</p></div></div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.5</p></div></div>
  <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
 </header>
 <nav aria-label="Dashboard sections">
@@ -79,6 +79,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <button type="button" data-tab="backups" aria-pressed="false">Backups</button>
  <button type="button" data-tab="settings" aria-pressed="false">Settings</button>
 </nav>
+<p class="muted small" id="usbTransferNotice" role="status" hidden></p>
 <main>
 <section id="overview" class="tab">
  <div class="grid">
@@ -90,7 +91,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <div class="panel"><h2>Latest pass</h2><div id="passSummary" class="muted">Awaiting status…</div>
  <div class="stats"><span>Skipped: <b id="skipped">0</b></span><span>Failed: <b id="failed">0</b></span><span>Daily snapshot: <b id="snapshot">—</b></span></div></div>
  <div class="panel"><h2>Recent operations</h2><ul id="history" class="list"><li class="muted">No recorded operations yet.</li></ul></div>
- <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Backup logs</button> <button class="secondary-button" id="installerLogs" type="button">Launcher installer logs</button><pre id="logs" hidden></pre></div>
+ <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">View logs</button><pre id="logs" hidden></pre></div>
 </section>
 <section id="backups" class="tab" hidden>
  <div class="panel" id="liveBackupPanel">
@@ -187,7 +188,16 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       text("usbFree",x.usbOnline?size(x.usbFree):"Unavailable");
       text("usbTotal",x.usbOnline?size(x.usbTotal)+" total":"Connect your USB backup drive");
       text("usbCurrent",x.usbDevice||"");
-      if(x.usbMoving)badge.textContent="Moving backup storage…";
+      var notice=byId("usbTransferNotice");
+      notice.hidden=!x.usbMoving;
+      if(x.usbMoving){
+        var progress=x.usbPercent>0?" · "+x.usbPercent+"%":"";
+        badge.textContent="Transferring backups"+progress;
+        notice.textContent="USB backup transfer in progress"+progress+
+          ". You can view the dashboard and logs; editing is temporarily disabled.";
+      }
+      Array.prototype.forEach.call(byId("preferences").querySelectorAll("input, select, button"),
+        function(control){control.disabled=!!x.usbMoving;});
       text("interval",x.interval?x.interval+" s":"—");
       text("files",x.hasRun?String(x.copied):"—");
       text("bytes",x.hasRun?size(x.bytes)+" copied":"No recent data");
@@ -468,14 +478,6 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   byId("viewLogs").addEventListener("click",function(){
     var el=byId("logs");el.hidden=false;el.textContent="Loading…";
     request("/api/logs").then(function(r){return r.text();}).then(function(s){el.textContent=s||"No recent entries.";}).catch(function(){el.textContent="No diagnostic logs are available.";});
-  });
-  byId("installerLogs").addEventListener("click",function(){
-    var el=byId("logs");el.hidden=false;el.textContent="Loading installer log…";
-    request("/api/installer-log").then(function(r){return r.text();}).then(function(s){
-      el.textContent=s||"No installer activity recorded.";
-    }).catch(function(){
-      el.textContent="No launcher-installer.log found on USB. Check that the correct installer ELF ran; if no file exists, the loader may have rejected it before execution.";
-    });
   });
   status();history();
   setInterval(status,12000);

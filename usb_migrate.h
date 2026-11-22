@@ -68,6 +68,9 @@ static int usb_compare_file(const char *from, const char *to) {
       used += (size_t)m;
     }
     if(result || memcmp(a, b, (size_t)n)) {result = -1;break;}
+    /* Verification is half of the transfer work, not an unmeasured pause
+     * after copying has reached 50%. */
+    progress_advance((uint64_t)n);
   }
   if(!result) {
     unsigned char tail;
@@ -162,7 +165,14 @@ static int usb_migrate_to_unlocked(const char *target) {
     }
   } else if(errno != ENOENT) return -1;
 
+  /* Announce only after preflight checks have passed. Dynamic dashboard
+   * status stays available throughout the copy and verification. */
+  char notice[128];
+  snprintf(notice, sizeof notice,
+           "Backup USB changed. Copying to %s.", target);
+  atomic_store(&storage_migration_percent, 0);
   atomic_store(&storage_migrating, 1);
+  usb_transfer_notice(0, notice);
   int ok = 0;
   if(!mkdir(stage, 0700)) {
     char marker[PATH_MAX];
@@ -171,12 +181,27 @@ static int usb_migrate_to_unlocked(const char *target) {
     if(f) {
       int written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
       if(fclose(f)) written = 0;
-      if(written && !usb_transfer_tree(source, stage, 0) &&
-         !usb_verify_tree(source, stage, 0) &&
-         storage_usb_online(USB_ROOT, NULL, NULL) &&
-         storage_usb_online(target, NULL, NULL)) {
-        sync();
-        if(!rename(stage, destination)) ok = 1;
+      if(written) {
+#ifndef PS5SAVE_USB_TEST
+        uint64_t size = dir_size(source);
+        progress_reset();
+        progress_plan(1);
+        /* Copy and byte-for-byte verification each contribute half. */
+        progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
+        progress_start(usb_progress_notification);
+#endif
+        int verified = !usb_transfer_tree(source, stage, 0) &&
+            !usb_verify_tree(source, stage, 0) &&
+            storage_usb_online(USB_ROOT, NULL, NULL) &&
+            storage_usb_online(target, NULL, NULL);
+#ifndef PS5SAVE_USB_TEST
+        progress_finish();
+        progress_stop(); /* Join the worker before any terminal toast. */
+#endif
+        if(verified) {
+          sync();
+          if(!rename(stage, destination)) ok = 1;
+        }
       }
     }
   }
@@ -218,7 +243,7 @@ static int usb_migrate_to_unlocked(const char *target) {
   storage_move_error[0] = 0;
   atomic_store(&storage_migrating, 0);
   logq("Backup storage transferred to %s", USB_ROOT);
-  notify_info("Backup storage moved to %s.", USB_ROOT);
+  usb_transfer_notice(1, "USB transfer complete.");
   return 0;
 }
 static int usb_migrate_to(const char *target) {

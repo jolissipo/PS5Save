@@ -10,8 +10,12 @@
 
 static char storage_requested_usb[32] = "";
 static atomic_int storage_migrating;
+static atomic_uint storage_migration_percent;
 static pthread_mutex_t storage_change_lock = PTHREAD_MUTEX_INITIALIZER;
 static char storage_move_error[256] = "";
+/* Bitset of USB slots containing an existing backup installation at startup. */
+static unsigned storage_existing_usb_mask;
+/* The launcher now uses the same events.log as the backup engine. */
 
 static int storage_usb_number(const char *path) {
   size_t prefix = strlen(STORAGE_USB_PREFIX);
@@ -90,6 +94,7 @@ static int storage_priority(const char *root) {
 
 static int storage_choose_initial_usb(void) {
   int selected = -1, highest = -1;
+  storage_existing_usb_mask = 0;
   uint64_t best_free = 0;
   for(int i = 0; i < STORAGE_USB_SLOTS; i++) {
     char mount[PATH_MAX];
@@ -97,6 +102,7 @@ static int storage_choose_initial_usb(void) {
     uint64_t available = 0;
     if(!storage_usb_online(mount, &available, NULL)) continue;
     int rank = storage_priority(mount);
+    if(rank > 0) storage_existing_usb_mask |= 1u << i;
     if(selected < 0 || rank > highest ||
        (rank == highest && available > best_free)) {
       selected = i; highest = rank; best_free = available;
@@ -107,6 +113,32 @@ static int storage_choose_initial_usb(void) {
   snprintf(root, sizeof root, "%s%d", STORAGE_USB_PREFIX, selected);
   storage_set_paths(root);
   return 0;
+}
+
+/* A one-shot startup diagnostic, separate from the native backup toasts.
+ * Report ALL detected existing locations and the selected one. The caller
+ * writes this text to events.log and sends it as a cumulative Debug popup.
+ * This does not treat two backup folders as identical or remove either. */
+static int storage_startup_conflict_message(char *message, size_t cap) {
+  unsigned count = 0;
+  for(unsigned i = 0; i < STORAGE_USB_SLOTS; ++i)
+    if(storage_existing_usb_mask & (1u << i)) count++;
+  if(count < 2 || !cap) return 0;
+
+  int n = snprintf(message, cap, "PS5Save+: backups found on multiple USB drives: ");
+  if(n < 0 || (size_t)n >= cap) return 0;
+  size_t used = (size_t)n;
+  for(unsigned i = 0; i < STORAGE_USB_SLOTS; ++i) {
+    if(!(storage_existing_usb_mask & (1u << i))) continue;
+    n = snprintf(message + used, cap - used, "%s%s%u",
+                 used == (size_t)strlen("PS5Save+: backups found on multiple USB drives: ") ? "" : ", ",
+                 STORAGE_USB_PREFIX, i);
+    if(n < 0 || (size_t)n >= cap - used) return 0;
+    used += (size_t)n;
+  }
+  n = snprintf(message + used, cap - used,
+               ". Selected %s. Other backups left unchanged.", USB_ROOT);
+  return n > 0 && (size_t)n < cap - used;
 }
 
 /* This marker is not backup content. Never remove or overwrite any other

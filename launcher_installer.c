@@ -33,12 +33,6 @@
 #define LAUNCHER_MARKER_VALUE "PS5Save+ standalone launcher v1\n"
 #define LAUNCHER_READY LAUNCHER_ROOT "/.ps5save-plus-registered-v3"
 #define LAUNCHER_READY_VALUE "PS5Save+ title registration succeeded v3\n"
-#ifdef PS5SAVE_DYNAMIC_STORAGE
-#define LAUNCHER_LOG storage_installer_log
-#else
-#define LAUNCHER_LOG "/mnt/usb0/ps5save-plus/launcher-installer.log"
-#endif
-#define LAUNCHER_LOG_FALLBACK "/data/ps5save-plus-launcher.log"
 #define LAUNCHER_ICON LAUNCHER_SYS "/icon0.png"
 #define LAUNCHER_PARAM LAUNCHER_SYS "/param.json"
 #define LAUNCHER_JSON "launcher/param.json"
@@ -68,47 +62,19 @@ typedef struct {
 } launcher_debug_request_t;
 int sceKernelSendNotificationRequest(int, void *, size_t, int);
 
-static void launcher_log(const char *message) {
-  const char *paths[] = { LAUNCHER_LOG, LAUNCHER_LOG_FALLBACK };
-  for(size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
-    const char *path = paths[i];
-    struct stat st;
-    if(!lstat(path, &st) && S_ISREG(st.st_mode) && st.st_size >= 64 * 1024) {
-      char old[256];
-      int n = snprintf(old, sizeof old, "%s.1", path);
-      if(n > 0 && (size_t)n < sizeof old) {
-        unlink(old);
-        rename(path, old);
-      }
-    }
-    int fd = open(path, O_CREAT | O_WRONLY | O_APPEND | O_NOFOLLOW, 0600);
-    if(fd < 0) continue;
-    if(!fstat(fd, &st) && S_ISREG(st.st_mode)) {
-      char line[512];
-      int n = snprintf(line, sizeof line, "[%lld] %s\n",
-                       (long long)time(NULL), message);
-      if(n > 0) (void)write(fd, line, (size_t)n < sizeof line ?
-                                         (size_t)n : sizeof line - 1);
-    }
-    close(fd);
-    return;
-  }
-}
-
 static void launcher_debug(const char *fmt, ...) {
   launcher_debug_request_t req = {0};
   va_list args;
   va_start(args, fmt);
   vsnprintf(req.message, sizeof req.message, fmt, args);
   va_end(args);
-  printf("[PS5Save+ Installer] %s\n", req.message);
-  launcher_log(req.message);
+  logq("[Launcher] %s", req.message);
   int rc = sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
   if(rc) {
     char text[100];
     snprintf(text, sizeof text,
              "sceKernelSendNotificationRequest failed: 0x%08X", (unsigned)rc);
-    launcher_log(text);
+    logq("[Launcher] %s", text);
   }
 }
 
