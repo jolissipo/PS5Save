@@ -92,7 +92,7 @@ static int storage_choose_initial_usb(void) {
   int selected = -1, highest = -1;
   uint64_t best_free = 0;
   for(int i = 0; i < STORAGE_USB_SLOTS; i++) {
-    char mount[32];
+    char mount[PATH_MAX];
     snprintf(mount, sizeof mount, "%s%d", STORAGE_USB_PREFIX, i);
     uint64_t available = 0;
     if(!storage_usb_online(mount, &available, NULL)) continue;
@@ -103,7 +103,7 @@ static int storage_choose_initial_usb(void) {
     }
   }
   if(selected < 0) return -1;
-  char root[32];
+  char root[PATH_MAX];
   snprintf(root, sizeof root, "%s%d", STORAGE_USB_PREFIX, selected);
   storage_set_paths(root);
   return 0;
