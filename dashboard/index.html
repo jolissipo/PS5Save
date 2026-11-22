@@ -40,6 +40,17 @@ h3{font-size:14px;margin:0 0 12px;color:#dce5f4}
 .list li{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:13px 0;border-bottom:1px solid #324053}
 .list li:last-child{border-bottom:0}
 .list li span:last-child{color:#aebbd0;font-size:13px;text-align:right}
+.explore-row{display:flex;align-items:center;gap:12px;justify-content:space-between;border-bottom:1px solid #324053;padding:10px 0}
+.explore-row:last-child{border-bottom:0}
+.explore-row button,.crumbs button{color:#c8dfff;background:transparent;border:0;padding:5px;cursor:pointer;font:inherit;text-align:left;overflow-wrap:anywhere}
+.explore-row button:hover,.crumbs button:hover{text-decoration:underline}
+.explore-row button:focus-visible,.crumbs button:focus-visible{outline:2px solid #9cc3ff;outline-offset:2px}
+.explore-row .detail{font-size:12px;color:#a8b5c9;text-align:right;flex-shrink:0}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:3px;padding:8px 0 13px}
+.file-mark{display:inline-block;min-width:27px;font-size:17px}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.panel-head h2{margin:0}
+#treeSummary{margin-top:12px}
 .status-good{color:#a4efc5}
 .status-error{color:#ffc0b8}
 .status-warn{color:#ffe2a3}
@@ -82,10 +93,23 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Show recent log entries</button><pre id="logs" hidden></pre></div>
 </section>
 <section id="backups" class="tab" hidden>
- <div class="panel"><h2>Daily snapshots</h2><p class="muted small">Completed snapshot directories found on the USB drive.</p>
- <ul id="snapshots" class="list"><li class="muted">Checking…</li></ul></div>
- <div class="panel"><h2>Backup folders</h2><p class="muted small">Top-level folders of the live backup. File restore is not available in this preview.</p>
- <ul id="backupRoots" class="list"><li class="muted">Checking…</li></ul></div>
+ <div class="panel">
+  <div class="panel-head"><h2>Live backup</h2><button class="secondary-button" id="browseLive" type="button">Browse files</button></div>
+  <p class="small muted">The latest saved files. Browse folders, sizes and modification dates; no files are changed.</p>
+ </div>
+ <div class="panel">
+  <h2>Daily snapshots</h2>
+  <p class="small muted">Dated copies of the live backup at the moment each snapshot was created. Choose a date to inspect its contents.</p>
+  <div id="snapshots" aria-live="polite"><p class="muted">Loading snapshots…</p></div>
+ </div>
+ <div class="panel">
+  <h2 id="treeHeading">Backup contents</h2>
+  <div id="treeSummary" class="small muted">Select the live backup or a daily snapshot to inspect its files.</div>
+  <div id="treeTrail" class="crumbs" aria-label="Current backup path"></div>
+  <div id="treeItems" aria-live="polite"></div>
+  <button class="secondary-button" id="moreFiles" type="button" hidden>Show more files</button>
+  <p class="small muted">Directory contents and sizes reflect files on the USB. They do not prove that every original save was successfully copied or verified. No restoration is performed here.</p>
+ </div>
 </section>
 <section id="settings" class="tab" hidden>
  <div class="panel"><h2>Settings</h2>
@@ -130,7 +154,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 </main>
 <footer>
  <div>PS5Save+ · Based on PS5Save by heni0xyz and contributors.</div>
- <div>This preview is read-only. Keep TCP 8755 on your trusted local network; do not expose it to the internet.</div>
+ <div>The file browser is read-only. Configuration changes require PS5 pairing. Keep TCP 8755 on your trusted LAN.</div>
 </footer>
 </div>
 <script>
@@ -178,13 +202,93 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       });
     }).catch(function(){byId("history").textContent="";line("history","No saved history yet");});
   }
-  function listing(endpoint,id,empty){
-    request(endpoint).then(function(r){return r.text();}).then(function(s){
-      var entries=lines(s).sort().reverse();byId(id).textContent="";
-      if(!entries.length){line(id,empty);return;}
-      entries.forEach(function(item){line(id,item);});
-    }).catch(function(){byId(id).textContent="";line(id,"Unavailable");});
+  var explorer={root:"live",date:"",path:"",next:null,version:0};
+  function backupQuery(endpoint){
+    var url=endpoint+"?root="+explorer.root;
+    if(explorer.date)url+="&date="+encodeURIComponent(explorer.date);
+    return url;
   }
+  function addExplorerMessage(id,message){
+    var p=document.createElement("p");p.className="small muted";p.textContent=message;byId(id).appendChild(p);
+  }
+  function snapshotList(){
+    request("/api/snapshots").then(function(r){return r.text();}).then(function(s){
+      var container=byId("snapshots"),dates=lines(s).sort().reverse();
+      container.textContent="";
+      if(!dates.length){addExplorerMessage("snapshots","No daily snapshots found.");return;}
+      dates.forEach(function(day){
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return;
+        var row=document.createElement("div");row.className="explore-row";
+        var btn=document.createElement("button");
+        btn.type="button";btn.textContent="📅 "+day;
+        btn.addEventListener("click",function(){openBrowser("snapshot",day,"");});
+        var detail=document.createElement("span");detail.className="detail";detail.textContent="Browse snapshot";
+        row.appendChild(btn);row.appendChild(detail);container.appendChild(row);
+      });
+    }).catch(function(){byId("snapshots").textContent="";addExplorerMessage("snapshots","Snapshots unavailable.");});
+  }
+  function openBrowser(root,day,path){
+    explorer.root=root;explorer.date=day||"";explorer.path=path||"";
+    explorer.next=null;explorer.version++;
+    text("treeHeading",root==="live"?"Live backup":("Snapshot · "+day));
+    byId("treeItems").textContent="";
+    byId("moreFiles").hidden=true;
+    var trail=byId("treeTrail");trail.textContent="";
+    var parts=explorer.path?explorer.path.split("/"):[];
+    var all=["Backup"].concat(parts);
+    all.forEach(function(name,i){
+      if(i){var sep=document.createElement("span");sep.textContent="/";trail.appendChild(sep);}
+      var b=document.createElement("button");b.type="button";b.textContent=name;
+      var parent=parts.slice(0,i).join("/");
+      b.addEventListener("click",function(){openBrowser(root,day,parent);});
+      trail.appendChild(b);
+    });
+    text("treeSummary","Calculating file totals (on request)…");
+    var version=explorer.version;
+    request(backupQuery("/api/summary")).then(function(r){return r.json();}).then(function(data){
+      if(version!==explorer.version)return;
+      var description=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
+      if(!data.complete)description+=" · Partial scan (time or file limit reached)";
+      else description+=" · Filesystem inventory";
+      text("treeSummary",description);
+    }).catch(function(){if(version===explorer.version)text("treeSummary","Summary unavailable. You can still browse the file tree.");});
+    loadTree(false);
+  }
+  function loadTree(more){
+    var version=explorer.version;
+    var url=backupQuery("/api/tree")+"&path="+encodeURIComponent(explorer.path);
+    if(more && explorer.next)url+="&after="+encodeURIComponent(explorer.next);
+    if(!more){byId("treeItems").textContent="";addExplorerMessage("treeItems","Loading directory…");}
+    byId("moreFiles").hidden=true;
+    request(url).then(function(r){return r.json();}).then(function(result){
+      if(version!==explorer.version)return;
+      var container=byId("treeItems");
+      if(!more)container.textContent="";
+      if(!result.entries.length&&!more)addExplorerMessage("treeItems","No files in this directory.");
+      result.entries.forEach(function(item){
+        var row=document.createElement("div");row.className="explore-row";
+        var label=document.createElement(item.dir?"button":"span");
+        if(item.dir)label.type="button";
+        var mark=document.createElement("span");mark.className="file-mark";mark.textContent=item.dir?"📁":"📄";
+        label.appendChild(mark);label.appendChild(document.createTextNode(item.name));
+        if(item.dir){
+          var newPath=explorer.path?(explorer.path+"/"+item.name):item.name;
+          label.addEventListener("click",function(){openBrowser(explorer.root,explorer.date,newPath);});
+        }
+        var detail=document.createElement("span");detail.className="detail";
+        detail.textContent=(item.dir?"Folder":size(item.size))+" · "+date(item.mtime);
+        row.appendChild(label);row.appendChild(detail);container.appendChild(row);
+      });
+      explorer.next=result.next;
+      byId("moreFiles").hidden=!result.next;
+    }).catch(function(){
+      if(version!==explorer.version)return;
+      if(!more)byId("treeItems").textContent="";
+      addExplorerMessage("treeItems","Could not read this folder. Check the USB or try again.");
+    });
+  }
+  byId("browseLive").addEventListener("click",function(){openBrowser("live","","");});
+  byId("moreFiles").addEventListener("click",function(){if(explorer.next)loadTree(true);});
   var sessionToken="",configSource="",configVersion="";
   var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
   var keys=["backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
@@ -268,7 +372,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       var selected=button.getAttribute("data-tab");
       Array.prototype.forEach.call(document.querySelectorAll("nav button"),function(b){b.setAttribute("aria-pressed",b===button?"true":"false");});
       Array.prototype.forEach.call(document.querySelectorAll(".tab"),function(el){el.hidden=el.id!==selected;});
-      if(selected==="backups"){listing("/api/snapshots","snapshots","No daily snapshots found.");listing("/api/backups","backupRoots","No live backup folders found.");}
+      if(selected==="backups"){snapshotList();openBrowser("live","","");}
       if(selected==="settings")configuration();
     });
   });
