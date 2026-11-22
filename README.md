@@ -22,7 +22,7 @@ The backup service runs in the background while the payload remains active. Save
 ## Getting started
 
 1. Connect an **exFAT USB drive** with enough free space for your backups and snapshots.
-2. Download **`ps5saveplus_v0.1.0-alpha.6.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
+2. Download **`ps5saveplus_v0.1.0-alpha.7.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
 3. On first launch, PS5Save+ selects a mounted USB, creates `/mnt/usbN/ps5save-plus/backup.conf` if missing, checks for changes immediately and installs the dashboard shortcut if needed.
 4. Open the PS5Save+ shortcut, or use `http://<PS5-IP>:8755/` from a device on the same trusted network.
 
