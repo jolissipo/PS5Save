@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
