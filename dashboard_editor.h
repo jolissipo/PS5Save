@@ -515,7 +515,19 @@ static void editor_save(int fd, const char *headers,
   }
   pthread_mutex_lock(&storage_change_lock);
 #endif
+  /* A config write that starts first completes before the next backup begins.
+   * A write requested mid-backup is rejected without revoking its session. */
+  pthread_mutex_lock(&dashboard_edit_lock);
+  if(dashboard_backup_running()) {
+    pthread_mutex_unlock(&dashboard_edit_lock);
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+    pthread_mutex_unlock(&storage_change_lock);
+#endif
+    dashboard_text(fd, 409, "Backup in progress. Settings temporarily disabled.");
+    return;
+  }
   editor_save_unlocked(fd, headers, body, len);
+  pthread_mutex_unlock(&dashboard_edit_lock);
 #ifdef PS5SAVE_DYNAMIC_STORAGE
   pthread_mutex_unlock(&storage_change_lock);
 #endif
