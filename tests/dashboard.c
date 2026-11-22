@@ -113,23 +113,23 @@ int main(void) {
 
   struct stat st;
   assert(!stat(DASHBOARD_HISTORY, &st) && st.st_size > 0);
-  make_request("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET / HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "PS5Save+");
-  make_request("GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/status HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "\"copied\":2");
-  make_request("GET /api/history HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/history HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "\tsuccess\t12000\t2\t0\t0\t1");
-  make_request("GET /api/snapshots HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/snapshots HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "2026-11-22");
-  make_request("GET /api/backups HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/backups HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "saves");
-  make_request("GET /api/config HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/config HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "backup_notifications=all");
-  make_request("GET /api/logs HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /api/logs HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "backup started");
-  make_request("POST /api/config HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+  make_request("POST /api/config HTTP/1.1\r\nHost: localhost:8755\r\nContent-Length: 0\r\n\r\n",
                "403 Forbidden");
-  make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost\r\n\r\n",
+  make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "404 Not Found");
   puts("PASS dashboard read-only endpoints and persistent history");
   return 0;
