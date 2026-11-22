@@ -379,7 +379,12 @@ static void editor_save(int fd, const char *headers,
   /* Retain one previous version on the same USB. Writes are completed to
    * separate temp files and atomically renamed. Readers never see half a file.
    */
-  int backup_saved = editor_atomic_file(CONF_PATH ".bak", ".part", old, old_len);
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *backup_path = storage_conf_bak;
+#else
+  const char *backup_path = CONF_PATH ".bak";
+#endif
+  int backup_saved = editor_atomic_file(backup_path, ".part", old, old_len);
   free(old);
   if(!backup_saved ||
      !editor_atomic_file(CONF_PATH, ".part", body, len)) {
