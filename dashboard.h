@@ -61,7 +61,7 @@ static void dashboard_history_append(const backup_stats_t *stats, int deferred,
                                      int snapshot, int errored) {
   if(!stats->copied && !stats->skipped && !stats->failed &&
      !deferred && !snapshot && !errored) return;
-  if(mkdir_p(DASHBOARD_DATA_DIR)) return;
+  if(access(CONF_PATH, R_OK) || mkdir_p(DASHBOARD_DATA_DIR)) return;
   struct stat st;
   if(!stat(DASHBOARD_HISTORY, &st) && st.st_size >= DASHBOARD_HISTORY_MAX) {
     unlink(DASHBOARD_HISTORY_ROTATED);
@@ -145,7 +145,7 @@ static void dashboard_serve_status(int fd) {
   dashboard_state_t state;
   struct statfs sf;
   unsigned long long free_bytes = 0, total_bytes = 0;
-  int usb_online = !statfs(USB_ROOT, &sf);
+  int usb_online = !access(CONF_PATH, R_OK) && !statfs(USB_ROOT, &sf);
   if(usb_online) {
     free_bytes = (unsigned long long)sf.f_bavail * sf.f_bsize;
     total_bytes = (unsigned long long)sf.f_blocks * sf.f_bsize;
@@ -208,6 +208,51 @@ static void dashboard_serve_file(int fd, const char *path) {
   free(contents);
 }
 
+
+/* Return only the tail: large diagnostic logs must never block UI requests or
+ * allocate memory proportional to the log file size. */
+static void dashboard_serve_log_tail(int fd) {
+  FILE *f = fopen(DASHBOARD_DATA_DIR "/events.log", "rb");
+  if(!f) {
+    dashboard_text(fd, 404, "No diagnostic logs yet");
+    return;
+  }
+  if(fseek(f, 0, SEEK_END)) {
+    fclose(f);
+    dashboard_text(fd, 503, "Cannot seek log");
+    return;
+  }
+  long len = ftell(f);
+  if(len < 0) {
+    fclose(f);
+    dashboard_text(fd, 503, "Cannot read log");
+    return;
+  }
+  long start = len > 16384 ? len - 16384 : 0;
+  if(fseek(f, start, SEEK_SET)) {
+    fclose(f);
+    dashboard_text(fd, 503, "Cannot seek log");
+    return;
+  }
+  char buf[16385];
+  size_t n = fread(buf, 1, sizeof buf - 1, f);
+  int error = ferror(f);
+  fclose(f);
+  if(error) {
+    dashboard_text(fd, 503, "Cannot read log");
+    return;
+  }
+  buf[n] = 0;
+  /* Skip the first partial line if the tail starts mid-record. */
+  char *body = buf;
+  if(start > 0) {
+    char *line = strchr(buf, '\n');
+    if(line) body = line + 1;
+  }
+  dashboard_respond(fd, 200, "text/plain; charset=utf-8",
+                    body, strlen(body));
+}
+
 static int dashboard_snapshot_name(const char *s) {
   if(strlen(s) != 10) return 0;
   for(int i = 0; i < 10; i++) {
@@ -226,6 +271,10 @@ static void dashboard_serve_snapshot_list(int fd) {
     struct dirent *entry;
     while((entry = readdir(dir))) {
       if(!dashboard_snapshot_name(entry->d_name)) continue;
+      char full[PATH_MAX];
+      struct stat st;
+      if(snprintf(full, sizeof full, "%s/%s", DAILY_ROOT, entry->d_name) >= (int)sizeof full ||
+         stat(full, &st) || !S_ISDIR(st.st_mode)) continue;
       size_t n = strlen(entry->d_name);
       if(pos + n + 2 >= sizeof result) break;
       memcpy(result + pos, entry->d_name, n);
@@ -252,6 +301,10 @@ static void dashboard_serve_backup_roots(int fd) {
       for(size_t i = 0; i < n; i++)
         if((unsigned char)entry->d_name[i] < 32) safe = 0;
       if(!safe) continue;
+      char full[PATH_MAX];
+      struct stat st;
+      if(snprintf(full, sizeof full, "%s/%s", BACKUP_ROOT, entry->d_name) >= (int)sizeof full ||
+         stat(full, &st) || !S_ISDIR(st.st_mode)) continue;
       memcpy(result + pos, entry->d_name, n);
       pos += n;
       result[pos++] = '\n';
@@ -295,6 +348,7 @@ static void dashboard_request(int fd) {
   else if(!strcmp(path, "/api/backups")) dashboard_serve_backup_roots(fd);
   else if(!strcmp(path, "/api/config")) dashboard_serve_file(fd, CONF_PATH);
   else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
+  else if(!strcmp(path, "/api/logs")) dashboard_serve_log_tail(fd);
   else dashboard_text(fd, 404, "Not found");
 }
 
