@@ -3032,7 +3032,6 @@ acquire_lock(void) {
 /* After standby the old exclusive-instance listener can be stale even if
  * the process survives. Rebind it without replacing or stopping another
  * process. If another instance owns the port, this instance must stop. */
-#ifndef BACKUP_HOST_TEST
 static int restore_instance_lock(int *lock) {
   if(*lock >= 0) close(*lock);
   *lock = -1;
@@ -3053,7 +3052,6 @@ static int restore_instance_lock(int *lock) {
   logq("PS5Save+ instance lock restored after standby.");
   return 0;
 }
-#endif
 
 /**
  * Wait on monotonic interval deadlines, with short checks for closed queued
