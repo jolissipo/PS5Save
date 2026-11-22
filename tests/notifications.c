@@ -117,7 +117,8 @@ sceNotificationSend(int user_id, bool is_logged, const char *payload) {
   assert(atomic_fetch_add(&sending, 1) == 0);
   assert(user_id == NOTIFICATION_USER_ID && is_logged);
   assert(strstr(payload, NOTIFICATION_ICON_PATH));
-  assert(strstr(payload, "\"bundleName\":\"PS5Save+\""));
+  assert(strstr(payload, "\"bundleName\":\"PS5Save+\"") ||
+         strstr(payload, "\"bundleName\":\"PS5Save+ Backup\""));
   assert(strstr(payload, "\"localNotificationId\":\"ps5save-"));
   if(fail_notification_send) {
     assert(atomic_fetch_sub(&sending, 1) == 1);
@@ -452,6 +453,37 @@ test_languages(void) {
 }
 
 static void
+test_terminal_toast(void) {
+  notification_settings.mode = NOTICES_ALL;
+  notification_settings.in_game = 1;
+  unsigned before = toast_count(NULL);
+
+  notify_backup_status(0, "Backup progress: 99%%");
+  double start = now_seconds();
+  notify_backup_status(1, "Backup complete (12 MB).");
+  double delta = now_seconds() - start;
+
+  assert(delta < 0.5); /* No progress sampling interval before completion. */
+  assert(toast_count(NULL) == before + 2);
+  pthread_mutex_lock(&capture_mutex);
+  assert(strstr(toasts[before], "\"bundleName\":\"PS5Save+ Backup\""));
+  assert(strstr(toasts[before], "\"toastOverwriteType\":\"No\""));
+  assert(strstr(toasts[before+1], "\"bundleName\":\"PS5Save+ Backup\""));
+  assert(strstr(toasts[before+1], "\"toastOverwriteType\":\"Always\""));
+  assert(strstr(toasts[before+1], "\"isImmediate\":true"));
+  assert(toast_times[before+1] >= toast_times[before]);
+  assert(toast_times[before+1] - toast_times[before] < 0.5);
+  pthread_mutex_unlock(&capture_mutex);
+
+  notify_info("Independent status");
+  pthread_mutex_lock(&capture_mutex);
+  assert(strstr(toasts[before+2], "\"bundleName\":\"PS5Save+\""));
+  assert(strstr(toasts[before+2], "\"toastOverwriteType\":\"No\""));
+  pthread_mutex_unlock(&capture_mutex);
+  puts("PASS terminal completion bypasses progress cadence and does not overwrite unrelated toasts");
+}
+
+static void
 test_progress(void) {
   /* Change cadence with estimated remaining work, not fixed 25% steps. */
   assert(progress_interval_for(0, 10) == PROGRESS_INTERVAL_SECONDS);
@@ -606,6 +638,7 @@ main(int argc, char **argv) {
   else if(!strcmp(argv[1], "read-error")) test_read_error();
   else if(!strcmp(argv[1], "snapshot")) test_snapshot();
   else if(!strcmp(argv[1], "progress")) test_progress();
+  else if(!strcmp(argv[1], "terminal")) test_terminal_toast();
   else if(!strcmp(argv[1], "language")) test_languages();
   else if(!strcmp(argv[1], "recovery")) test_recovery();
   else if(!strcmp(argv[1], "concurrent")) test_concurrent();
