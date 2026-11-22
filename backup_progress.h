@@ -1,6 +1,7 @@
 /* Cycle progress: one unit per changed file, save image or daily snapshot.
  * Save images split their unit between staging and decrypted-file copying.
- * Only this state is shared with the notification worker. */
+ * Only this state is shared with the notification worker. Percent is a
+ * work-unit estimate, not a verified fraction of all source bytes. */
 #ifndef BACKUP_PROGRESS_H
 #define BACKUP_PROGRESS_H
 
@@ -8,7 +9,7 @@
 #include <stdint.h>
 
 #ifndef PROGRESS_INTERVAL_SECONDS
-#define PROGRESS_INTERVAL_SECONDS 60
+#define PROGRESS_INTERVAL_SECONDS 10
 #endif
 
 static pthread_mutex_t progress_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -34,34 +35,51 @@ progress_percent_locked(void) {
   return percent;
 }
 
-/* Consume all milestones reached by this sample so missed updates never queue. */
-static int
-progress_milestone(unsigned percent, unsigned *last) {
-  unsigned milestone = percent / 25;
-  if(milestone <= *last || milestone > 3) return 0;
-  *last = milestone;
-  return 1;
+/* A short backup stays silent until completion. After ten seconds,
+ * sample the CURRENT percent (no fixed milestones). If the observed pace
+ * suggests a long operation, increase the interval to 20 or 30 seconds.
+ * This limits console interruptions without hiding real progress. */
+static unsigned
+progress_interval_for(unsigned percent, double elapsed) {
+  if(percent == 0) return PROGRESS_INTERVAL_SECONDS;
+  double estimate_remaining = elapsed * (100.0 - percent) / percent;
+  if(estimate_remaining > 30.0 * PROGRESS_INTERVAL_SECONDS)
+    return 3 * PROGRESS_INTERVAL_SECONDS;
+  if(estimate_remaining > 12.0 * PROGRESS_INTERVAL_SECONDS)
+    return 2 * PROGRESS_INTERVAL_SECONDS;
+  return PROGRESS_INTERVAL_SECONDS;
 }
 
 static void *
 progress_worker(void *arg) {
   (void)arg;
-  unsigned last_milestone = 0;
+  unsigned last_reported = 101;
+  unsigned interval = PROGRESS_INTERVAL_SECONDS;
+  struct timespec start;
+  if(clock_gettime(CLOCK_MONOTONIC, &start)) return NULL;
   pthread_mutex_lock(&progress_mutex);
-  while(progress_running && last_milestone < 3) {
+  while(progress_running) {
     struct timespec deadline;
     if(clock_gettime(CLOCK_MONOTONIC, &deadline)) break;
-    deadline.tv_sec += PROGRESS_INTERVAL_SECONDS;
+    deadline.tv_sec += interval;
     int rc = 0;
     while(progress_running && rc == 0)
       rc = pthread_cond_timedwait(&progress_cond, &progress_mutex, &deadline);
     if(!progress_running) break;
     if(rc != ETIMEDOUT) break;
     if(!progress_current && progress_completed >= progress_total) continue;
+
     unsigned percent = progress_percent_locked();
-    if(!progress_milestone(percent, &last_milestone)) continue;
+    struct timespec now;
+    if(clock_gettime(CLOCK_MONOTONIC, &now)) break;
+    double elapsed = (double)(now.tv_sec - start.tv_sec) +
+                     (double)(now.tv_nsec - start.tv_nsec) / 1e9;
+    interval = progress_interval_for(percent, elapsed);
+
+    if(percent == last_reported) continue;
+    last_reported = percent;
     pthread_mutex_unlock(&progress_mutex);
-    progress_emit(last_milestone * 25);
+    progress_emit(percent);
     pthread_mutex_lock(&progress_mutex);
   }
   pthread_mutex_unlock(&progress_mutex);
