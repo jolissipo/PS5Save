@@ -209,7 +209,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v0.1.0-alpha.6"
+#define PS5SAVE_RELEASE "v0.1.0-alpha.7"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;

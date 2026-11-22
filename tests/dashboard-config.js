@@ -109,3 +109,29 @@ assert.ok(preferenceControls.every(control => !control.disabled));
 assert.match(html, /if\(button\.disabled\)return;/);
 assert.match(html, /Settings is temporarily disabled\./);
 console.log("PASS dashboard configuration and USB-transfer Settings lock");
+
+/* The editing indicator belongs to this page's token, not a global console
+ * flag. Another browser starts locked and can authorize independently. */
+const editorNodes={
+  requestPair:{disabled:false,textContent:"Unlock editing on PS5"},
+  pairForm:{hidden:false},settingsForm:{hidden:true},advanced:{hidden:true}
+};
+context.byId = id => editorNodes[id];
+vm.runInContext(extractFunction("setEditingState","verifyEditorSession"),context,
+  {filename:"dashboard-editor-state.js"});
+context.setEditingState(true);
+assert.equal(editorNodes.requestPair.disabled,true);
+assert.equal(editorNodes.requestPair.textContent,"Editing already enabled");
+assert.equal(editorNodes.pairForm.hidden,true);
+assert.equal(editorNodes.settingsForm.hidden,false);
+assert.equal(editorNodes.advanced.hidden,false);
+context.setEditingState(false);
+assert.equal(editorNodes.requestPair.disabled,false);
+assert.equal(editorNodes.requestPair.textContent,"Unlock editing on PS5");
+assert.equal(editorNodes.pairForm.hidden,true);
+assert.equal(editorNodes.settingsForm.hidden,true);
+assert.equal(editorNodes.advanced.hidden,true);
+assert.match(html,/if\(sessionToken\)\{\s*text\("pairMessage","Editing already enabled in this browser\."\)/);
+assert.match(html,/post\("\/api\/session","",\{"X-PS5Save-Session":checked\}\)/);
+assert.match(html,/error\.status!==403/);
+console.log("PASS editing button state and browser-local token validation");
