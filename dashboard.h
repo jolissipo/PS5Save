@@ -431,15 +431,10 @@ static void dashboard_request(int fd) {
   }
   char *query = strchr(path, '?');
   if(query) *query++ = 0;
-#ifdef PS5SAVE_DYNAMIC_STORAGE
-  /* Do not expose partially switched filesystem paths while cross-USB
-   * migration is in progress. Status and the device list remain available. */
-  if(atomic_load(&storage_migrating) &&
-     strcmp(path, "/api/status") && strcmp(path, "/api/usb-devices")) {
-    dashboard_text(fd, 503, "Backup USB transfer in progress; try again shortly.");
-    return;
-  }
-#endif
+  /* Read-only dashboard routes remain reachable throughout USB migration.
+   * POST /api/config is separately blocked/serialized in editor_save().
+   * A file read at the instant of drive switch may need one retry; neither
+   * the home page nor diagnostics should be hidden behind an HTTP error. */
   if(!strcmp(method, "GET")) {
     if(!strcmp(path, "/") || !strcmp(path, "/index.html")) {
       dashboard_respond(fd, 200, "text/html; charset=utf-8",
