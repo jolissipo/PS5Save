@@ -71,7 +71,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <div class="wrap">
 <header>
  <div class="brand"><div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor" focusable="false"><path d="M8.984 2.596v17.547l3.915 1.261V6.688c0-.69.304-1.151.794-.991.636.18.76.814.76 1.505v5.875c2.441 1.193 4.362-.002 4.362-3.152 0-3.237-1.126-4.675-4.438-5.827-1.307-.448-3.728-1.186-5.39-1.502zm4.656 16.241l6.296-2.275c.715-.258.826-.625.246-.818-.586-.192-1.637-.139-2.357.123l-4.205 1.5V14.98l.24-.085s1.201-.42 2.913-.615c1.696-.18 3.785.03 5.437.661 1.848.601 2.04 1.472 1.576 2.072-.465.6-1.622 1.036-1.622 1.036l-8.544 3.107V18.86zM1.807 18.6c-1.9-.545-2.214-1.668-1.352-2.32.801-.586 2.16-1.052 2.16-1.052l5.615-2.013v2.313L4.205 17c-.705.271-.825.632-.239.826.586.195 1.637.15 2.343-.12L8.247 17v2.074c-.12.03-.256.044-.39.073-1.939.331-3.996.196-6.038-.479z"/></svg></div>
- <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.3</p></div></div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.4</p></div></div>
  <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
 </header>
 <nav aria-label="Dashboard sections">
@@ -147,7 +147,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   <label class="field">Daily snapshots to retain
    <select name="daily_snapshots_to_keep"><option value="0">Off</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="10">10</option></select></label>
   <label class="field">Maximum save-image size per title (MB)
-   <input type="number" name="max_title_size_mb" min="64" max="65536" step="1"></label>
+   <input type="number" name="max_title_size_mb" min="64" max="65536" step="1" required></label>
   <button class="secondary-button" type="submit">Save preferences</button>
  </form>
  <p class="small muted">Other settings and custom source paths are preserved exactly as written.</p>
@@ -346,6 +346,17 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   var sessionToken="",configSource="",configVersion="";
   var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
   var keys=["backup_usb_device","backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
+  /* Parse existing backup.conf settings without losing numeric key names.
+   * JS regex literals use single backslashes; double backslashes would match
+   * the literal characters \s and leave the form with empty defaults. */
+  function parseConfigurationValues(source){
+    var values={};
+    source.split(/\r?\n/).forEach(function(line){
+      var match=line.match(/^\s*([a-z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if(match)values[match[1]]=match[2];
+    });
+    return values;
+  }
   function usbOptions(configured){
     request("/api/usb-devices").then(function(r){return r.json();}).then(function(data){
       var select=byId("usbDevice"),desired=configured||"auto";
@@ -374,11 +385,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     .then(function(v){
       configSource=v[0];configVersion=v[1].trim();text("config",configSource);
       byId("rawConfig").value=configSource;
-      var values={};
-      configSource.split(/\r?\n/).forEach(function(line){
-        var match=line.match(/^\\s*([a-z_]+)\\s*=\\s*(.*?)\\s*$/);
-        if(match)values[match[1]]=match[2];
-      });
+      var values=parseConfigurationValues(configSource);
       var form=byId("preferences");
       usbOptions(values.backup_usb_device);
       keys.forEach(function(key){
@@ -433,6 +440,11 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     event.preventDefault();
     if(!sessionToken||!configVersion)return;
     var form=byId("preferences"),result=configSource;
+    if(!form.checkValidity()){
+      if(form.reportValidity)form.reportValidity();
+      text("saveMessage","Check the empty or invalid settings before saving.");
+      return;
+    }
     keys.forEach(function(key){
       var el=form.elements.namedItem(key);if(!el)return;
       var value=boolKeys.indexOf(key)!==-1?(el.checked?"true":"false"):el.value;
