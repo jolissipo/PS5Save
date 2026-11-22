@@ -195,7 +195,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       configSource=v[0];configVersion=v[1].trim();text("config",configSource);
       byId("rawConfig").value=configSource;
       var values={};
-      configSource.split(/\\r?\\n/).forEach(function(line){
+      configSource.split(/\r?\n/).forEach(function(line){
         var match=line.match(/^\\s*([a-z_]+)\\s*=\\s*(.*?)\\s*$/);
         if(match)values[match[1]]=match[2];
       });
@@ -219,14 +219,14 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
     });
   }
   function replaceKey(original,key,value){
-    var rows=original.split("\\n"),seen=false;
+    var rows=original.split("\n"),seen=false;
     rows=rows.map(function(line){
-      var match=line.match(new RegExp("^(\\\\s*"+key+"\\\\s*=\\\\s*)([^\\\\r\\\\n]*)$"));
+      var match=line.match(new RegExp("^(\\s*"+key+"\\s*=\\s*)([^\\r\\n]*)$"));
       if(match){seen=true;return match[1]+value;}
       return line;
     });
     if(!seen){if(rows.length&&rows[rows.length-1].trim())rows.push("");rows.push(key+"="+value);}
-    return rows.join("\\n");
+    return rows.join("\n");
   }
   function saveConfiguration(newValue,outputId){
     text(outputId,"Saving…");
