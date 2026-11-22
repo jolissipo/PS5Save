@@ -123,10 +123,27 @@ static int usb_verify_tree(const char *source, const char *target,
   }
   if(!entry && errno) result = -1;
   closedir(d);
+  if(result) return result;
+
+  /* A recovered stage may contain stale files. Do not silently commit them. */
+  DIR *staged = opendir(target);
+  if(!staged) return -1;
+  errno = 0;
+  while(!result && (entry = readdir(staged))) {
+    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+       (!depth && !strcmp(entry->d_name, USB_STAGE_MARK))) continue;
+    char from[PATH_MAX];
+    struct stat expected;
+    if(snprintf(from, sizeof from, "%s/%s", source, entry->d_name) >=
+       (int)sizeof from || lstat(from, &expected)) result = -1;
+    errno = 0;
+  }
+  if(!entry && errno) result = -1;
+  closedir(staged);
   return result;
 }
 
-static int usb_target_ready(const char *target) {
+static int usb_target_ready(const char *target, const char *validated_stage) {
   uint64_t free_bytes;
   if(!storage_usb_online(target, &free_bytes, NULL)) return 0;
   struct stat from, to;
@@ -138,7 +155,10 @@ static int usb_target_ready(const char *target) {
   if(from.st_dev == to.st_dev) return 0;
 #endif
   uint64_t needed = dir_size(STORAGE_ROOT) + SPACE_MARGIN;
-  return free_bytes > needed;
+  /* Reused bytes already occupy the destination drive. */
+  uint64_t staged = validated_stage ? dir_size(validated_stage) : 0;
+  if(staged > needed) staged = needed;
+  return free_bytes > needed - staged;
 }
 
 static int usb_migrate_to_unlocked(const char *target) {
