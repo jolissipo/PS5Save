@@ -217,8 +217,8 @@ static void dashboard_serve_file(int fd, const char *path) {
 
 /* Return only the tail: large diagnostic logs must never block UI requests or
  * allocate memory proportional to the log file size. */
-static void dashboard_serve_log_tail(int fd) {
-  FILE *f = fopen(DASHBOARD_DATA_DIR "/events.log", "rb");
+static void dashboard_serve_log_tail_file(int fd, const char *path) {
+  FILE *f = fopen(path, "rb");
   if(!f) {
     dashboard_text(fd, 404, "No diagnostic logs yet");
     return;
@@ -257,6 +257,14 @@ static void dashboard_serve_log_tail(int fd) {
   }
   dashboard_respond(fd, 200, "text/plain; charset=utf-8",
                     body, strlen(body));
+}
+
+static void dashboard_serve_log_tail(int fd) {
+  dashboard_serve_log_tail_file(fd, DASHBOARD_DATA_DIR "/events.log");
+}
+static void dashboard_serve_installer_log(int fd) {
+  dashboard_serve_log_tail_file(fd,
+                                DASHBOARD_DATA_DIR "/launcher-installer.log");
 }
 
 static int dashboard_snapshot_name(const char *s) {
@@ -369,6 +377,7 @@ static void dashboard_request(int fd) {
     else if(!strcmp(path, "/api/config-version")) editor_serve_version(fd);
     else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
     else if(!strcmp(path, "/api/logs")) dashboard_serve_log_tail(fd);
+    else if(!strcmp(path, "/api/installer-log")) dashboard_serve_installer_log(fd);
     else dashboard_text(fd, 404, "Not found");
     return;
   }
