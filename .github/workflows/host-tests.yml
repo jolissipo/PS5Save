@@ -36,8 +36,10 @@ jobs:
                   super().__init__()
                   self.in_script = False
                   self.scripts = []
+                  self.ids = []
               def handle_starttag(self, name, attrs):
                   if name == "script": self.in_script = True
+                  self.ids += [value for key, value in attrs if key == "id"]
               def handle_endtag(self, name):
                   if name == "script": self.in_script = False
               def handle_data(self, data):
@@ -45,10 +47,19 @@ jobs:
           p = ScriptParser()
           p.feed(pathlib.Path("dashboard/index.html").read_text(encoding="utf-8"))
           assert len(p.scripts) == 1, "Dashboard must contain one inline script"
+          assert len(p.ids) == len(set(p.ids)), "HTML element IDs must be unique"
+          for element_id in ("liveItems", "liveTrail", "liveSummary", "liveMore",
+                             "snapshotItems", "snapshotTrail", "snapshotSummary",
+                             "snapshotMore", "snapshotPicker"):
+              assert element_id in p.ids, f"Missing independent explorer component: {element_id}"
+          assert "explorers={" in p.scripts[0], "Backup trees must have independent navigation state"
           pathlib.Path("/tmp/ps5save-dashboard.js").write_text(p.scripts[0], encoding="utf-8")
           j = json.loads(pathlib.Path("launcher/param.json").read_text(encoding="utf-8"))
           assert j["titleId"] == "P5SV00001"
           assert j["deeplinkUri"] == "http://127.0.0.1:8755/"
+          assert j["contentId"] == "IV9999-P5SV00001_00-PS5SAVEPLUS00001"
+          assert j["applicationDrmType"] == "free"
+          assert j["localizedParameters"]["en-US"]["titleName"] == "PS5Save+"
           PY
           node --check /tmp/ps5save-dashboard.js
 
