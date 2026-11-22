@@ -34,3 +34,10 @@ ${CC:-cc} ${CFLAGS:-} -std=c11 -D_DEFAULT_SOURCE -UNDEBUG -Wall -Wextra -Werror 
   -DTEST_ROOT="\"$test_dir/dashboard-fixture\"" \
   tests/dashboard.c -o "$test_dir/dashboard"
 "$test_dir/dashboard"
+
+
+# Exercise USB selection and transfer with two isolated filesystem fixtures.
+${CC:-cc} ${CFLAGS:-} -std=c11 -D_DEFAULT_SOURCE -UNDEBUG -Wall -Wextra -Werror -pthread "$@" \
+  -DTEST_ROOT="\"$test_dir/usb-fixture\"" \
+  tests/usb_storage.c -o "$test_dir/usb-storage"
+"$test_dir/usb-storage"
