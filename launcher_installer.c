@@ -116,11 +116,11 @@ int sceAppInstUtilAppInstallTitleDir(const char *title_id,
 /* The launcher refuses to operate on a symlink or a foreign directory.
  * Any existing directory must carry our exact ownership marker.
  */
-static int launcher_safe_directory(const char *path, int create) {
+static int launcher_safe_directory(const char *path, int create, mode_t mode) {
   struct stat st;
   if(!lstat(path, &st)) return S_ISDIR(st.st_mode);
   if(errno != ENOENT || !create) return 0;
-  if(mkdir(path, 0755)) return 0;
+  if(mkdir(path, mode)) return 0;
   return !lstat(path, &st) && S_ISDIR(st.st_mode);
 }
 
@@ -204,7 +204,7 @@ int main(void) {
 
   /* The exact issue fixed in Payload Manager PR #108: on some consoles
    * /user/app does not exist. Create it before touching the title folder. */
-  if(!launcher_safe_directory("/user/app", 1)) {
+  if(!launcher_safe_directory("/user/app", 1, 0770)) {
     launcher_debug("ERRO: pasta /user/app indisponivel (errno %d).", errno);
     return 1;
   }
@@ -233,7 +233,7 @@ int main(void) {
     return 1;
   }
 
-  if(!existing && !launcher_safe_directory(LAUNCHER_ROOT, 1)) {
+  if(!existing && !launcher_safe_directory(LAUNCHER_ROOT, 1, 0755)) {
     launcher_debug("ERRO: nao foi possivel criar pasta do atalho (errno %d).",
                    errno);
     sceAppInstUtilTerminate();
@@ -247,7 +247,7 @@ int main(void) {
       return 1;
     }
   }
-  if(!launcher_safe_directory(LAUNCHER_SYS, 1) ||
+  if(!launcher_safe_directory(LAUNCHER_SYS, 1, 0755) ||
      !launcher_write_atomic(LAUNCHER_PARAM, launcher_param, launcher_param_size) ||
      !launcher_write_atomic(LAUNCHER_ICON, notification_icon_png,
                             sizeof notification_icon_png)) {
