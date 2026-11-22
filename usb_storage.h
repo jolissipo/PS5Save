@@ -115,8 +115,10 @@ static int storage_mark_active(void) {
   if(errno != ENOENT) return -1;
   int fd = open(mark, O_CREAT | O_WRONLY | O_EXCL, 0600);
   if(fd < 0) return -1;
-  int n = dprintf(fd, "%s\n", USB_ROOT);
-  int rc = n > 0 && !fsync(fd) ? 0 : -1;
+  char data[48];
+  int n = snprintf(data, sizeof data, "%s\n", USB_ROOT);
+  int rc = n > 0 && (size_t)n < sizeof data &&
+           write(fd, data, (size_t)n) == n && !fsync(fd) ? 0 : -1;
   if(close(fd)) rc = -1;
   return rc;
 }
