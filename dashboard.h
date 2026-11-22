@@ -61,10 +61,12 @@ static dashboard_state_t dashboard_state;
  * listener is unusable. SIGCONT only sets a flag; the dashboard thread
  * performs all socket teardown/rebind work outside the signal handler. */
 static volatile sig_atomic_t dashboard_resume_requested;
+static volatile sig_atomic_t backup_resume_requested;
 static atomic_uint dashboard_listener_restores;
 static void dashboard_on_continue(int signal_number) {
   (void)signal_number;
   dashboard_resume_requested = 1;
+  backup_resume_requested = 1;
 }
 
 static void dashboard_set_running(int value) {
