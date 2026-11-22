@@ -197,7 +197,20 @@ static int launcher_registered_and_current(void) {
 
 static int ps5save_launcher_install(void) {
   /* Skip quietly on repeat launches; no user-facing Debug noise. */
-  if(launcher_registered_and_current()) return 0;
+  if(launcher_registered_and_current()) {
+    /* A launcher registered by an earlier version still belongs to us.
+     * Update just its artwork, never reinstall the title or touch others. */
+    if(!launcher_file_equals(LAUNCHER_ICON, notification_icon_png,
+                             sizeof notification_icon_png)) {
+      if(!launcher_write_atomic(LAUNCHER_ICON, notification_icon_png,
+                                sizeof notification_icon_png)) {
+        launcher_debug("WARNING: PS5Save+ launcher artwork could not be updated.");
+      } else {
+        launcher_debug("PS5Save+ launcher artwork updated.");
+      }
+    }
+    return 0;
+  }
   launcher_debug("PS5Save+ launcher: starting installation.");
 
   int rc = kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());
