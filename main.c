@@ -73,6 +73,7 @@ along with this program; see the file COPYING. If not, see
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -104,8 +105,50 @@ along with this program; see the file COPYING. If not, see
 #include <ps5/klog.h>
 
 
+/* PS5 exposes up to eight external USB mount points. On the console the
+ * selected paths are mutable and change ONLY between backup passes. Host
+ * fixtures retain compile-time literal paths to exercise the backup engine. */
+#ifndef BACKUP_HOST_TEST
+#define PS5SAVE_DYNAMIC_STORAGE 1
+static char storage_usb_path[PATH_MAX] = "/mnt/usb0";
+static char storage_root_path[PATH_MAX] = "/mnt/usb0/ps5save-plus";
+static char storage_conf_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf";
+static char storage_backup_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup";
+static char storage_daily_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup_daily";
+static char storage_legacy_conf[PATH_MAX] = "/mnt/usb0/backup.conf";
+static char storage_legacy_bak[PATH_MAX] = "/mnt/usb0/backup.conf.bak";
+static char storage_legacy_backup[PATH_MAX] = "/mnt/usb0/backup";
+static char storage_legacy_daily[PATH_MAX] = "/mnt/usb0/backup_daily";
+static char storage_conf_bak[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.bak";
+static char storage_conf_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup.conf.part";
+static char storage_log_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log";
+static char storage_log_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/events.log.1";
+static char storage_history_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv";
+static char storage_history_rotated[PATH_MAX] = "/mnt/usb0/ps5save-plus/history.tsv.1";
+static char storage_index_path[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index";
+static char storage_index_part[PATH_MAX] = "/mnt/usb0/ps5save-plus/backup/.ps5save-index.part";
+static char storage_installer_log[PATH_MAX] = "/mnt/usb0/ps5save-plus/launcher-installer.log";
+#define USB_ROOT storage_usb_path
+#define STORAGE_ROOT storage_root_path
+#define CONF_PATH storage_conf_path
+#define BACKUP_ROOT storage_backup_path
+#define DAILY_ROOT storage_daily_path
+#define LEGACY_CONF_PATH storage_legacy_conf
+#define LEGACY_CONF_BAK storage_legacy_bak
+#define LEGACY_BACKUP_ROOT storage_legacy_backup
+#define LEGACY_DAILY_ROOT storage_legacy_daily
+#else
 #ifndef USB_ROOT
 #define USB_ROOT      "/mnt/usb0"
+#endif
+#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
+#define CONF_PATH     STORAGE_ROOT "/backup.conf"
+#define BACKUP_ROOT   STORAGE_ROOT "/backup"
+#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
+#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
+#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
+#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
+#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #endif
 #ifndef HOME_ROOT
 #define HOME_ROOT     "/user/home"
@@ -120,14 +163,6 @@ along with this program; see the file COPYING. If not, see
 #define PFSMGR_DEV    "/dev/pfsmgr"
 #endif
 
-#define STORAGE_ROOT  USB_ROOT "/ps5save-plus"
-#define CONF_PATH     STORAGE_ROOT "/backup.conf"
-#define BACKUP_ROOT   STORAGE_ROOT "/backup"
-#define DAILY_ROOT    STORAGE_ROOT "/backup_daily"
-#define LEGACY_CONF_PATH  USB_ROOT "/backup.conf"
-#define LEGACY_CONF_BAK   USB_ROOT "/backup.conf.bak"
-#define LEGACY_BACKUP_ROOT USB_ROOT "/backup"
-#define LEGACY_DAILY_ROOT  USB_ROOT "/backup_daily"
 #define MAX_DAILY     10      /* highest value for daily_snapshots_to_keep= */
 #define MAX_DAILY_DIRS 1024   /* date folders looked at when pruning */
 #define TMP_IMG       TMP_DIR "/_backup_tmp_image"
@@ -174,8 +209,8 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "v0.1.0-alpha.2"
-#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
+#define PS5SAVE_RELEASE "v0.1.0-alpha.3"
+#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
 
@@ -288,6 +323,7 @@ static int g_mount_stuck = 0;
 static int g_watch_game = 0;      /* protect the currently mounted title */
 static int g_game_abort = 0;      /* abort this save image only */
 static int g_backup_busy = 0;     /* one activity warning per copying pass */
+static int g_last_cycle_unchanged; /* true only for a complete no-change pass */
 static double g_last_watch = 0;
 static char g_abort_why[192];
 
@@ -595,9 +631,14 @@ backup_activity_begin(const char *message) {
 static pthread_mutex_t file_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void persist_log_line(const char *message) {
   pthread_mutex_lock(&file_log_mutex);
-  const char *dir = USB_ROOT "/ps5save-plus";
+  const char *dir = STORAGE_ROOT;
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *path = storage_log_path;
+  const char *old = storage_log_rotated;
+#else
   const char *path = USB_ROOT "/ps5save-plus/events.log";
   const char *old = USB_ROOT "/ps5save-plus/events.log.1";
+#endif
   if(!access(CONF_PATH, R_OK) && !mkdir_p(dir)) {
     struct stat st;
     if(!stat(path, &st) && st.st_size >= 256 * 1024) {
@@ -721,6 +762,9 @@ mkdir_p(const char *path) {
   return 0;
 }
 
+#ifndef BACKUP_HOST_TEST
+#include "usb_storage.h"
+#endif
 
 /* Embed the same default configuration published in the repository: there
  * is only one source of defaults for the distributed ELF and the example.
@@ -778,7 +822,11 @@ static int storage_default_config(void) {
   }
   if(errno != ENOENT) return -1;
 
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  const char *temp = storage_conf_part;
+#else
   const char *temp = CONF_PATH ".part";
+#endif
   int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if(fd < 0 && errno == EEXIST) {
     /* Incomplete file from an interrupted earlier attempt. No real config
@@ -856,7 +904,11 @@ static int storage_prepare(void) {
   if(storage_move_legacy(LEGACY_BACKUP_ROOT, BACKUP_ROOT, 1) < 0 ||
      storage_move_legacy(LEGACY_DAILY_ROOT, DAILY_ROOT, 1) < 0 ||
      storage_move_legacy(LEGACY_CONF_PATH, CONF_PATH, 0) < 0 ||
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+     storage_move_legacy(LEGACY_CONF_BAK, storage_conf_bak, 0) < 0)
+#else
      storage_move_legacy(LEGACY_CONF_BAK, CONF_PATH ".bak", 0) < 0)
+#endif
     return -1;
   return storage_default_config() < 0 ? -1 : 0;
 }
@@ -2166,10 +2218,21 @@ backup_entry(char *line, backup_stats_t *stats) {
   if(len == 0 || line[0] == '#') {
     return;
   }
+  const char *value;
 
+#ifndef BACKUP_HOST_TEST
+  if((value = config_value(line, "backup_usb_device", NULL))) {
+    if(!strcmp(value, "auto")) storage_requested_usb[0] = 0;
+    else if(storage_usb_number(value) >= 0)
+      snprintf(storage_requested_usb, sizeof storage_requested_usb, "%s", value);
+    else if(!g_progress_planning)
+      notify_problem(NOTICE_WARNING, "usb-invalid", NULL,
+                     "USB selection invalid. Choose /mnt/usb0 through /mnt/usb7.");
+    return;
+  }
+#endif
   /* Keep legacy key aliases for existing backup.conf files. All MB values
    * now mean decimal megabytes, including the legacy max_game_mb key. */
-  const char *value;
   if((value = config_value(line, "backup_interval_seconds", "interval"))) {
     long v;
     if(!config_number(value, MIN_INTERVAL, MAX_INTERVAL, &v)) {
@@ -2535,6 +2598,10 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
 }
 
 
+#ifndef BACKUP_HOST_TEST
+#include "usb_migrate.h"
+#endif
+
 static int
 cmp_desc(const void *a, const void *b) {
   return strcmp((const char*)b, (const char*)a);
@@ -2714,6 +2781,14 @@ run_cycle(int pending_only) {
   /* escape the jail so that /data and /mnt/usb0 are reachable; done on every
    * cycle in case the state was reset while the console was suspended */
   kernel_set_proc_rootdir(pid, kernel_get_root_vnode());
+#ifndef BACKUP_HOST_TEST
+  /* Prevent a detached USB mountpoint from ever becoming an internal-disk
+   * backup destination if a stale config happens to exist beneath it. */
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
+    logq("Backup USB is no longer mounted: %s", USB_ROOT);
+    return -1;
+  }
+#endif
 
   if(!(f = fopen(CONF_PATH, "r"))) {
     logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
@@ -2736,8 +2811,12 @@ run_cycle(int pending_only) {
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
   g_backup_busy = 0;
+  g_last_cycle_unchanged = 0;
   memset(&stats, 0, sizeof stats);
   start = now_seconds();
+#ifndef BACKUP_HOST_TEST
+  storage_requested_usb[0] = 0;
+#endif
 
   /* Settings are re-read from defaults on every cycle. */
   g_interval = DEF_INTERVAL;
@@ -2804,6 +2883,9 @@ run_cycle(int pending_only) {
                        notification_cycle_failed || config_read_failed);
 #endif
 
+  g_last_cycle_unchanged = !stats.failed && !notification_cycle_failed &&
+      !g_cycle_deferred && !stats.skipped && !config_read_failed &&
+      snapshot_result == 0 && !live_work_started;
   if(stats.failed || notification_cycle_failed) {
     logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
   } else if(g_cycle_deferred) {
@@ -2820,7 +2902,7 @@ run_cycle(int pending_only) {
     notify_backup_status(1, "Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
-    /* No changes is the normal outcome; avoid repetitive popups. */
+    /* Routine unchanged passes remain silent; startup confirms the scan. */
   }
 
   /* A previously reported failure has actually cleared. For normal mode,
@@ -2957,11 +3039,21 @@ main(void) {
     return EXIT_FAILURE;
   }
 
+#ifndef BACKUP_HOST_TEST
+  if(storage_choose_initial_usb()) {
+    notify_problem(NOTICE_ERROR, "usb-detection", NULL,
+                   "No writable USB drive available for backups.");
+    return EXIT_FAILURE;
+  }
+#endif
   if(storage_prepare()) {
     notify_problem(NOTICE_ERROR, "storage-layout", NULL,
                    "Backup storage layout unavailable. Check USB folders; no backup was started.");
     return EXIT_FAILURE;
   }
+#ifndef BACKUP_HOST_TEST
+  if(storage_mark_active()) logq("Could not write USB selection marker.");
+#endif
 
 #ifndef BACKUP_HOST_TEST
   /* Title registration requires no running web server. Skip silently on later
@@ -2977,9 +3069,17 @@ main(void) {
     report_config_error(result);
     return EXIT_FAILURE;
   }
+#ifndef BACKUP_HOST_TEST
+  if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+    notify_info("Moving backup storage to %s.", storage_requested_usb);
+    if(usb_migrate_to(storage_requested_usb))
+      notify_problem(NOTICE_WARNING, "usb-move", NULL,
+                     "Could not move backup storage: %s", storage_move_error);
+  }
+#endif
   /* An initial successful pass is the only time we confirm startup. */
-  if(!notification_cycle_failed && !g_backup_busy)
-    notify_info("Backup protection active.");
+  if(g_last_cycle_unchanged)
+    notify_info("Backup up to date. No changes.");
   if(g_daily > 0) {
     /* Log the date and UTC offset the payload sees. */
     clock_info_t ci;
@@ -3022,6 +3122,13 @@ main(void) {
     cycles++;
 #endif
 
+#ifndef BACKUP_HOST_TEST
+    if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+      if(usb_migrate_to(storage_requested_usb))
+        notify_problem(NOTICE_WARNING, "usb-move", NULL,
+                       "Could not move backup storage: %s", storage_move_error);
+    }
+#endif
     if(missing >= MISSING_TRIES) {
       logq("backup.conf is back");
     }

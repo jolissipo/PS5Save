@@ -34,6 +34,17 @@ typedef struct {
 } ps5_translation_t;
 
 static const ps5_translation_t ps5_translations[] = {
+  {"Backup up to date. No changes.",
+   "Cópia de segurança atualizada. Sem alterações.",
+   "Backup atualizado. Nenhuma alteração.",
+   "Copia de seguridad al día. Sin cambios.",
+   "Sauvegarde à jour. Aucune modification.",
+   "Sicherung aktuell. Keine Änderungen.",
+   "Backup aggiornato. Nessuna modifica.", 0},
+  {"Backup storage moved to ",
+   "Cópias de segurança transferidas para ", "Backups movidos para ",
+   "Copias trasladadas a ", "Sauvegardes déplacées vers ",
+   "Sicherung verschoben nach ", "Backup spostato su ", 1},
   {"Backup protection active.",
    "Cópias de segurança ativas.", "Backup ativo.",
    "Copias de seguridad activas.", "Sauvegardes actives.",

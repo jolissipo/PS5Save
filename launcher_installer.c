@@ -33,7 +33,11 @@
 #define LAUNCHER_MARKER_VALUE "PS5Save+ standalone launcher v1\n"
 #define LAUNCHER_READY LAUNCHER_ROOT "/.ps5save-plus-registered-v3"
 #define LAUNCHER_READY_VALUE "PS5Save+ title registration succeeded v3\n"
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+#define LAUNCHER_LOG storage_installer_log
+#else
 #define LAUNCHER_LOG "/mnt/usb0/ps5save-plus/launcher-installer.log"
+#endif
 #define LAUNCHER_LOG_FALLBACK "/data/ps5save-plus-launcher.log"
 #define LAUNCHER_ICON LAUNCHER_SYS "/icon0.png"
 #define LAUNCHER_PARAM LAUNCHER_SYS "/param.json"
@@ -193,7 +197,20 @@ static int launcher_registered_and_current(void) {
 
 static int ps5save_launcher_install(void) {
   /* Skip quietly on repeat launches; no user-facing Debug noise. */
-  if(launcher_registered_and_current()) return 0;
+  if(launcher_registered_and_current()) {
+    /* A launcher registered by an earlier version still belongs to us.
+     * Update just its artwork, never reinstall the title or touch others. */
+    if(!launcher_file_equals(LAUNCHER_ICON, notification_icon_png,
+                             sizeof notification_icon_png)) {
+      if(!launcher_write_atomic(LAUNCHER_ICON, notification_icon_png,
+                                sizeof notification_icon_png)) {
+        launcher_debug("WARNING: PS5Save+ launcher artwork could not be updated.");
+      } else {
+        launcher_debug("PS5Save+ launcher artwork updated.");
+      }
+    }
+    return 0;
+  }
   launcher_debug("PS5Save+ launcher: starting installation.");
 
   int rc = kernel_set_proc_rootdir(getpid(), kernel_get_root_vnode());

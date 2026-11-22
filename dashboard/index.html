@@ -70,8 +70,8 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <body>
 <div class="wrap">
 <header>
- <div class="brand"><div class="brand-icon" aria-hidden="true">+</div>
- <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.2</p></div></div>
+ <div class="brand"><div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor" focusable="false"><path d="M8.984 2.596v17.547l3.915 1.261V6.688c0-.69.304-1.151.794-.991.636.18.76.814.76 1.505v5.875c2.441 1.193 4.362-.002 4.362-3.152 0-3.237-1.126-4.675-4.438-5.827-1.307-.448-3.728-1.186-5.39-1.502zm4.656 16.241l6.296-2.275c.715-.258.826-.625.246-.818-.586-.192-1.637-.139-2.357.123l-4.205 1.5V14.98l.24-.085s1.201-.42 2.913-.615c1.696-.18 3.785.03 5.437.661 1.848.601 2.04 1.472 1.576 2.072-.465.6-1.622 1.036-1.622 1.036l-8.544 3.107V18.86zM1.807 18.6c-1.9-.545-2.214-1.668-1.352-2.32.801-.586 2.16-1.052 2.16-1.052l5.615-2.013v2.313L4.205 17c-.705.271-.825.632-.239.826.586.195 1.637.15 2.343-.12L8.247 17v2.074c-.12.03-.256.044-.39.073-1.939.331-3.996.196-6.038-.479z"/></svg></div>
+ <div><h1>PS5Save+</h1><p class="subtitle">Save backup dashboard · v0.1.0-alpha.3</p></div></div>
  <span id="overall" class="pill" role="status" aria-live="polite">Connecting…</span>
 </header>
 <nav aria-label="Dashboard sections">
@@ -83,7 +83,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
 <section id="overview" class="tab">
  <div class="grid">
   <div class="card"><small>Last backup check</small><strong id="lastRun">—</strong><p class="hint" id="lastResult">Waiting for first pass</p></div>
-  <div class="card"><small>USB free space</small><strong id="usbFree">—</strong><p class="hint" id="usbTotal">Checking USB drive</p></div>
+  <div class="card"><small>USB free space</small><strong id="usbFree">—</strong><p class="hint" id="usbTotal">Checking USB drive</p><p class="hint" id="usbCurrent">—</p></div>
   <div class="card"><small>Backup interval</small><strong id="interval">—</strong><p class="hint">Seconds between regular checks</p></div>
   <div class="card"><small>Files copied in last pass</small><strong id="files">—</strong><p class="hint" id="bytes">No recent copy</p></div>
  </div>
@@ -131,6 +131,9 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <p id="pairMessage" role="status" class="message small"></p></div>
  <div class="panel" id="settingsForm" hidden><h2>Backup preferences</h2>
  <form id="preferences">
+  <label class="field">Backup USB drive
+   <select name="backup_usb_device" id="usbDevice"><option value="auto">Automatic (prefer existing backups)</option></select></label>
+  <p class="small muted">Choose a mounted USB drive. Changing drives transfers the complete ps5save-plus folder, verifies its files and then uses the new USB for future backups. The source is preserved if the transfer cannot finish safely.</p>
   <label class="field">Check every
    <select name="backup_interval_seconds"><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
   <label class="field">Notifications
@@ -183,6 +186,8 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       text("lastRun",x.hasRun?date(x.lastRun):"Pending");
       text("usbFree",x.usbOnline?size(x.usbFree):"Unavailable");
       text("usbTotal",x.usbOnline?size(x.usbTotal)+" total":"Connect your USB backup drive");
+      text("usbCurrent",x.usbDevice||"");
+      if(x.usbMoving)badge.textContent="Moving backup storage…";
       text("interval",x.interval?x.interval+" s":"—");
       text("files",x.hasRun?String(x.copied):"—");
       text("bytes",x.hasRun?size(x.bytes)+" copied":"No recent data");
@@ -340,7 +345,29 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   });
   var sessionToken="",configSource="",configVersion="";
   var boolKeys=["backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies"];
-  var keys=["backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
+  var keys=["backup_usb_device","backup_interval_seconds","backup_notifications","backup_notifications_in_game","backup_ps4_saves","backup_ps5_saves","backup_encrypted_saves","backup_ps4_trophies","backup_ps5_trophies","daily_snapshots_to_keep","max_title_size_mb"];
+  function usbOptions(configured){
+    request("/api/usb-devices").then(function(r){return r.json();}).then(function(data){
+      var select=byId("usbDevice"),desired=configured||"auto";
+      select.textContent="";
+      var automatic=document.createElement("option");
+      automatic.value="auto";automatic.textContent="Automatic · keep existing backup drive";
+      select.appendChild(automatic);
+      (data.drives||[]).forEach(function(d){
+        var opt=document.createElement("option");opt.value=d.path;
+        opt.textContent=d.path+" · "+size(d.free)+" free / "+size(d.total);
+        if(d.path===data.current)opt.textContent+=" · current";
+        select.appendChild(opt);
+      });
+      if(desired!=="auto"&&!Array.prototype.some.call(select.options,function(o){return o.value===desired;})){
+        var missing=document.createElement("option");missing.value=desired;
+        missing.textContent=desired+" (not available)";missing.disabled=true;select.appendChild(missing);
+      }
+      select.value=desired;
+    }).catch(function(){
+      text("saveMessage","USB device list is unavailable. Reopen Settings to retry.");
+    });
+  }
   function configuration(){
     Promise.all([request("/api/config").then(function(r){return r.text();}),
                  request("/api/config-version").then(function(r){return r.text();})])
@@ -353,6 +380,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
         if(match)values[match[1]]=match[2];
       });
       var form=byId("preferences");
+      usbOptions(values.backup_usb_device);
       keys.forEach(function(key){
         var el=form.elements.namedItem(key);if(!el)return;
         var value=values[key];

@@ -161,6 +161,20 @@ static void test_file_browser(void) {
   puts("PASS dashboard tree pagination, snapshot inventory and path confinement");
 }
 
+static void test_usb_config_validation(void) {
+  const char *good_auto = "backup_usb_device=auto\n";
+  const char *good_usb = "backup_usb_device=/mnt/usb7\n";
+  const char *bad_internal = "backup_usb_device=/data\n";
+  const char *bad_outside = "backup_usb_device=/mnt/usb8\n";
+  assert(editor_validate(good_auto, strlen(good_auto)));
+  assert(editor_validate(good_usb, strlen(good_usb)));
+  assert(!editor_validate(bad_internal, strlen(bad_internal)));
+  assert(!editor_validate(bad_outside, strlen(bad_outside)));
+  make_request("GET /api/usb-devices HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"current\":");
+  puts("PASS USB configuration accepts only automatic or PS5 USB slots");
+}
+
 static void test_config_editor(void) {
   const char *pair =
     "POST /api/pair HTTP/1.1\r\n"
@@ -310,6 +324,7 @@ int main(void) {
                "403 Forbidden");
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "404 Not Found");
+  test_usb_config_validation();
   test_config_editor();
   test_file_browser();
   puts("PASS dashboard endpoints, persisted history and write security");

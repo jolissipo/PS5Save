@@ -194,7 +194,9 @@ test_legacy(void) {
   assert(toast_count(NULL) == 1);
   expect_toast(0, "Backup complete");
   expect_file(BACKUP_ROOT SOURCE, "original");
+  assert(!g_last_cycle_unchanged);
   assert(run_cycle(0) == 0);
+  assert(g_last_cycle_unchanged);
   assert(toast_count(NULL) == 1); /* No-change passes stay silent. */
 }
 

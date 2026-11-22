@@ -8,7 +8,7 @@ LDLIBS := -lSceFsInternalForVsh -lSceNotification -lSceSystemService -lSceIpmi -
 
 all: ps5saveplus.elf
 
-ps5saveplus.elf: main.c launcher_installer.c launcher/param.json notification_icon.h backup.conf backup_progress.h title_activity.h change_index.h dashboard.h dashboard_browser.h dashboard_editor.h ps5save_i18n.h dashboard/index.html VERSION
+ps5saveplus.elf: main.c launcher_installer.c launcher/param.json notification_icon.h usb_storage.h usb_migrate.h backup.conf backup_progress.h title_activity.h change_index.h dashboard.h dashboard_browser.h dashboard_editor.h ps5save_i18n.h dashboard/index.html VERSION
 	$(CC) $(CFLAGS) main.c $(LDLIBS) -o $@
 
 .PHONY: all clean test
