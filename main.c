@@ -3074,6 +3074,15 @@ main(void) {
     return EXIT_FAILURE;
   }
 #ifndef BACKUP_HOST_TEST
+  /* Only once per ELF launch, after logs are available on the selected USB.
+   * Use cumulative Debug rather than a native backup toast: this is a
+   * storage-selection diagnostic, not a backup result. */
+  char usb_conflict_message[512];
+  if(storage_startup_conflict_message(usb_conflict_message,
+                                      sizeof usb_conflict_message)) {
+    logq("%s", usb_conflict_message);
+    storage_debug(usb_conflict_message);
+  }
   if(storage_mark_active()) logq("Could not write USB selection marker.");
 #endif
 
