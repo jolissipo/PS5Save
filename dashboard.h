@@ -5,6 +5,7 @@
 #ifndef PS5SAVE_PLUS_DASHBOARD_H
 #define PS5SAVE_PLUS_DASHBOARD_H
 #include <signal.h>
+#include <stdatomic.h>
 #ifndef BACKUP_HOST_TEST
 
 #ifndef DASHBOARD_PORT
@@ -59,6 +60,7 @@ static dashboard_state_t dashboard_state;
  * listener is unusable. SIGCONT only sets a flag; the dashboard thread
  * performs all socket teardown/rebind work outside the signal handler. */
 static volatile sig_atomic_t dashboard_resume_requested;
+static atomic_uint dashboard_listener_restores;
 static void dashboard_on_continue(int signal_number) {
   (void)signal_number;
   dashboard_resume_requested = 1;
@@ -545,6 +547,7 @@ static void *dashboard_worker(void *arg) {
         sleep(2);
         continue;
       }
+      atomic_fetch_add(&dashboard_listener_restores, 1);
       logq("PS5Save+ dashboard: HTTP listener restored on port %d.", DASHBOARD_PORT);
     }
     struct pollfd pfd = {.fd = server, .events = POLLIN, .revents = 0};
