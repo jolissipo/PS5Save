@@ -89,6 +89,8 @@ int main(void) {
   assert(!mkdir_p(BACKUP_ROOT "/saves"));
   assert(!mkdir_p(DAILY_ROOT "/2026-11-22"));
   write_file(CONF_PATH, "backup_interval_seconds=300\nbackup_notifications=all\n");
+  assert(!mkdir_p(DASHBOARD_DATA_DIR));
+  write_file(DASHBOARD_DATA_DIR "/events.log", "2026-11-22T13:00:00Z backup started\n");
 
   backup_stats_t stats = { .bytes = 12000, .copied = 2 };
   dashboard_set_running(1);
@@ -108,6 +110,8 @@ int main(void) {
                "saves");
   make_request("GET /api/config HTTP/1.1\r\nHost: localhost\r\n\r\n",
                "backup_notifications=all");
+  make_request("GET /api/logs HTTP/1.1\r\nHost: localhost\r\n\r\n",
+               "backup started");
   make_request("POST /api/config HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
                "405 Method Not Allowed");
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost\r\n\r\n",
