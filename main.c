@@ -168,7 +168,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "PS5Save+ dev"
+#define PS5SAVE_RELEASE "dev"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -349,6 +349,8 @@ notification_json_escape(char *dst, size_t size, const char *src) {
 /* Standard informative notification: status message, PS5Save label and image.
  * Use a plain local image path, as in the SMP rich notification transport.
  * No interactive actions, alternate views or legacy debug popups. */
+#include "ps5save_i18n.h"
+
 static int
 build_notification_payload(const char *message, const char *created_at,
                            const char *id, char *payload, size_t size) {
@@ -406,7 +408,9 @@ send_notification(const char *message) {
     logq("Rich notification not sent: not enough memory");
     return 0;
   }
-  if(!build_notification_payload(message, created_at, id,
+  char localized[2048];
+  const char *display_text = ps5_localize_notification(message, localized, sizeof localized);
+  if(!build_notification_payload(display_text, created_at, id,
                                  payload, NOTIFICATION_JSON_SIZE)) {
     free(payload);
     logq("Rich notification not sent: payload too large");
