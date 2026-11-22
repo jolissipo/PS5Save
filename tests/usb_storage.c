@@ -119,6 +119,7 @@ int main(void) {
   snprintf(second,sizeof second,"%s1",STORAGE_USB_PREFIX);
   make_dirs(first);make_dirs(second);
   assert(storage_usb_number(first)==0 && storage_usb_number(second)==1);
+  assert(storage_requested_usb[0] == 0);
   assert(storage_usb_number("/data")==-1);
   assert(storage_usb_online(first,NULL,NULL));
   assert(storage_usb_online(second,NULL,NULL));
@@ -159,7 +160,7 @@ int main(void) {
   assert(rebase_calls==1 && save_calls==1 && notification_calls==1);
 
   /* Attempts to migrate to internal paths must not change anything. */
-  assert(usb_migrate_to("/data") == 0 ? 0 : 1); /* invalid device rejects */
+  assert(usb_migrate_to("/data") != 0); /* internal paths are rejected */
 
   /* A symlink in backup content must reject the transfer and keep source. */
   snprintf(path,sizeof path,"%s/ps5save-plus/backup/unsafe",second);
