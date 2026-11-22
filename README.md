@@ -4,13 +4,13 @@
 
 PS5Save+ is our fork of [PS5Save](https://github.com/heni0xyz/PS5Save). We created it to keep the original project's straightforward, reliable backup approach while improving the everyday experience: fewer interruptions, more visibility into saved data, simpler configuration and one payload for the entire workflow.
 
-> **Alpha software.** This release is intended for testing on jailbroken PS5 consoles. Keep a separate copy of important saves. The integrated launcher and other console-specific behaviours have not yet completed full regression testing.
+> **Alpha software.** The unified payload, dashboard and launcher have been tested on PS5 firmware 11.60. Keep independent copies of important saves while the project remains in alpha.
 
 ## Features
 
 - **Automatic incremental backups:** decrypted PS4/PS5 saves, original encrypted save files, trophy data and optional custom directories for emulators.
 - **Daily snapshots:** dated copies of the live backup, with configurable retention.
-- **Thoughtful notifications:** meaningful completion and error alerts, adaptive progress updates for longer operations, and automatic translation for selected console languages.
+- **Thoughtful notifications:** meaningful completion and error alerts, adaptive progress updates for longer operations, immediate completion toasts that replace obsolete percentages, and automatic translation for selected console languages.
 - **Web dashboard:** backup status, file explorer, independently browsable live backups and daily snapshots, sizes, operation history and diagnostic logs.
 - **Easy settings:** edit `backup.conf` from the browser after authorising the session with a code shown on the PS5.
 - **Home-screen shortcut:** automatically installs the PS5Save+ dashboard tile if missing. Subsequent launches do not reinstall it.
@@ -21,7 +21,7 @@ The backup service runs in the background while the payload remains active. Save
 ## Getting started
 
 1. Connect an **exFAT USB drive** with enough free space for your backups and snapshots.
-2. Download **`ps5saveplus_v0.1.0-alpha.1.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
+2. Download **`ps5saveplus_v0.1.0-alpha.2.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
 3. On first launch, PS5Save+ creates `/mnt/usb0/ps5save-plus/backup.conf` with its default settings if it does not exist, starts backup checks and attempts to install the dashboard shortcut.
 4. Open the PS5Save+ shortcut, or use `http://<PS5-IP>:8755/` from a device on the same trusted network.
 
