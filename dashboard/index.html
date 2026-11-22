@@ -243,15 +243,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       b.addEventListener("click",function(){openBrowser(root,day,parent);});
       trail.appendChild(b);
     });
-    text("treeSummary","Calculating file totals (on request)…");
-    var version=explorer.version;
-    request(backupQuery("/api/summary")).then(function(r){return r.json();}).then(function(data){
-      if(version!==explorer.version)return;
-      var description=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
-      if(!data.complete)description+=" · Partial scan (time or file limit reached)";
-      else description+=" · Filesystem inventory";
-      text("treeSummary",description);
-    }).catch(function(){if(version===explorer.version)text("treeSummary","Summary unavailable. You can still browse the file tree.");});
+    if(!explorer.path)text("treeSummary","Inventory available after loading the directory…");
     loadTree(false);
   }
   function loadTree(more){
@@ -281,6 +273,17 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
       });
       explorer.next=result.next;
       byId("moreFiles").hidden=!result.next;
+      /* One bounded inventory per selected backup, never on folder navigation. */
+      if(!more && !explorer.path){
+        text("treeSummary","Calculating file inventory…");
+        request(backupQuery("/api/summary")).then(function(r){return r.json();}).then(function(data){
+          if(version!==explorer.version)return;
+          var description=data.files+" files · "+data.dirs+" folders · "+size(data.bytes);
+          if(!data.complete)description+=" · Partial scan (time or file limit reached)";
+          else description+=" · Filesystem inventory";
+          text("treeSummary",description);
+        }).catch(function(){if(version===explorer.version)text("treeSummary","Summary unavailable; you can still browse the file tree.");});
+      }
     }).catch(function(){
       if(version!==explorer.version)return;
       if(!more)byId("treeItems").textContent="";
