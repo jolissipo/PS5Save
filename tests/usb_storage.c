@@ -39,9 +39,19 @@ static char storage_usb_path[PATH_MAX], storage_root_path[PATH_MAX],
 #include "../usb_storage.h"
 
 static int rebase_calls, save_calls, notification_calls;
+static int migration_started, migration_finished;
 static void progress_advance(size_t value) {(void)value;}
 static void logq(const char *format, ...) {(void)format;}
-static void notify_info(const char *format, ...) {(void)format;notification_calls++;}
+static void usb_transfer_notice(int complete, const char *message) {
+  notification_calls++;
+  if(complete) {
+    assert(!strcmp(message, "USB transfer complete."));
+    migration_finished++;
+  } else {
+    assert(strstr(message, "Backup USB changed. Copying to "));
+    migration_started++;
+  }
+}
 static void index_rebase_usb(const char *from, const char *to) {
   assert(strstr(from,"/ps5save-plus/backup"));
   assert(strstr(to,"/ps5save-plus/backup"));
@@ -158,7 +168,8 @@ int main(void) {
   file_expect(path,"snapshot data");
   snprintf(path,sizeof path,"%s/ps5save-plus",first);
   assert(access(path,F_OK)!=0);
-  assert(rebase_calls==1 && save_calls==1 && notification_calls==1);
+  assert(rebase_calls==1 && save_calls==1 && notification_calls==2);
+  assert(migration_started==1 && migration_finished==1);
 
   /* Attempts to migrate to internal paths must not change anything. */
   assert(usb_migrate_to("/data") != 0); /* internal paths are rejected */
