@@ -4,11 +4,11 @@ endif
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
 CFLAGS := -O2 -Wall -Wextra -Werror
-LDLIBS := -lSceFsInternalForVsh -lSceNotification -lpthread
+LDLIBS := -lSceFsInternalForVsh -lSceNotification -lSceSystemService -lpthread
 
 all: backup.elf
 
-backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change_index.h dashboard.h dashboard/index.html
+backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change_index.h dashboard.h dashboard_editor.h ps5save_i18n.h dashboard/index.html
 	$(CC) $(CFLAGS) main.c $(LDLIBS) -o $@
 
 .PHONY: all clean test
