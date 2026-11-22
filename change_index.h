@@ -77,6 +77,52 @@ index_clear(void) {
   index_count = 0; index_dirty = 0;
 }
 
+/* After a verified cross-USB copy, rebase cached destination paths and
+ * refresh target filesystem signatures. Original source signatures are
+ * retained so unchanged saves do not need to be copied again. */
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+static void index_rebase_usb(const char *from, const char *to) {
+  change_record_t *items = NULL;
+  for(unsigned bucket = 0; bucket < INDEX_BUCKETS; bucket++) {
+    change_record_t *r = change_index[bucket];
+    change_index[bucket] = NULL;
+    while(r) {
+      change_record_t *next = r->next;
+      r->next = items;
+      items = r;
+      r = next;
+    }
+  }
+  size_t prefix = strlen(from);
+  index_count = 0;
+  for(change_record_t *r = items; r;) {
+    change_record_t *next = r->next;
+    char newpath[PATH_MAX];
+    struct stat st;
+    if(strncmp(r->path, from, prefix) || r->path[prefix] != '/' ||
+       snprintf(newpath, sizeof newpath, "%s%s", to, r->path + prefix) >= (int)sizeof newpath ||
+       lstat(newpath, &st) || !S_ISREG(st.st_mode)) {
+      free(r->path);
+      free(r);
+    } else {
+      char *updated = strdup(newpath);
+      if(!updated) {free(r->path); free(r);}
+      else {
+        free(r->path);
+        r->path = updated;
+        r->target = file_signature(&st);
+        unsigned bucket = index_bucket(r->path);
+        r->next = change_index[bucket];
+        change_index[bucket] = r;
+        index_count++;
+      }
+    }
+    r = next;
+  }
+  index_dirty = 1;
+}
+#endif
+
 static int
 file_current(const char *dst, const struct stat *src) {
   change_record_t *r = index_record(dst, 0);
