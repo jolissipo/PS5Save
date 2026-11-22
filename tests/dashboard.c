@@ -282,6 +282,7 @@ int main(void) {
   write_file(CONF_PATH, "backup_interval_seconds=300\nbackup_notifications=all\n");
   assert(!mkdir_p(DASHBOARD_DATA_DIR));
   write_file(DASHBOARD_DATA_DIR "/events.log", "2026-11-22T13:00:00Z backup started\n");
+  write_file(DASHBOARD_DATA_DIR "/launcher-installer.log", "PS5Save+ installer v3: inicio.\n");
 
   backup_stats_t stats = { .bytes = 12000, .copied = 2 };
   dashboard_set_running(1);
@@ -303,6 +304,8 @@ int main(void) {
                "backup_notifications=all");
   make_request("GET /api/logs HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "backup started");
+  make_request("GET /api/installer-log HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "installer v3: inicio");
   make_request("POST /api/config HTTP/1.1\r\nHost: localhost:8755\r\nContent-Length: 0\r\n\r\n",
                "403 Forbidden");
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
