@@ -210,7 +210,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
 #define PS5SAVE_RELEASE "v0.1.0-alpha.2"
-#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
+#define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v4.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
 
@@ -323,6 +323,7 @@ static int g_mount_stuck = 0;
 static int g_watch_game = 0;      /* protect the currently mounted title */
 static int g_game_abort = 0;      /* abort this save image only */
 static int g_backup_busy = 0;     /* one activity warning per copying pass */
+static int g_last_cycle_unchanged; /* true only for a complete no-change pass */
 static double g_last_watch = 0;
 static char g_abort_why[192];
 
@@ -2780,6 +2781,14 @@ run_cycle(int pending_only) {
   /* escape the jail so that /data and /mnt/usb0 are reachable; done on every
    * cycle in case the state was reset while the console was suspended */
   kernel_set_proc_rootdir(pid, kernel_get_root_vnode());
+#ifndef BACKUP_HOST_TEST
+  /* Prevent a detached USB mountpoint from ever becoming an internal-disk
+   * backup destination if a stale config happens to exist beneath it. */
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
+    logq("Backup USB is no longer mounted: %s", USB_ROOT);
+    return -1;
+  }
+#endif
 
   if(!(f = fopen(CONF_PATH, "r"))) {
     logq("Cannot open %s: %s", CONF_PATH, strerror(errno));
@@ -2802,6 +2811,7 @@ run_cycle(int pending_only) {
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
   g_backup_busy = 0;
+  g_last_cycle_unchanged = 0;
   memset(&stats, 0, sizeof stats);
   start = now_seconds();
 #ifndef BACKUP_HOST_TEST
@@ -2873,6 +2883,9 @@ run_cycle(int pending_only) {
                        notification_cycle_failed || config_read_failed);
 #endif
 
+  g_last_cycle_unchanged = !stats.failed && !notification_cycle_failed &&
+      !g_cycle_deferred && !stats.skipped && !config_read_failed &&
+      snapshot_result == 0 && !live_work_started;
   if(stats.failed || notification_cycle_failed) {
     logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
   } else if(g_cycle_deferred) {
@@ -3065,7 +3078,7 @@ main(void) {
   }
 #endif
   /* An initial successful pass is the only time we confirm startup. */
-  if(!notification_cycle_failed && !g_backup_busy)
+  if(g_last_cycle_unchanged)
     notify_info("Backup up to date. No changes.");
   if(g_daily > 0) {
     /* Log the date and UTC offset the payload sees. */
