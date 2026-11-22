@@ -431,6 +431,15 @@ static void dashboard_request(int fd) {
   }
   char *query = strchr(path, '?');
   if(query) *query++ = 0;
+#ifdef PS5SAVE_DYNAMIC_STORAGE
+  /* Do not expose partially switched filesystem paths while cross-USB
+   * migration is in progress. Status and the device list remain available. */
+  if(atomic_load(&storage_migrating) &&
+     strcmp(path, "/api/status") && strcmp(path, "/api/usb-devices")) {
+    dashboard_text(fd, 503, "Backup USB transfer in progress; try again shortly.");
+    return;
+  }
+#endif
   if(!strcmp(method, "GET")) {
     if(!strcmp(path, "/") || !strcmp(path, "/index.html")) {
       dashboard_respond(fd, 200, "text/html; charset=utf-8",
