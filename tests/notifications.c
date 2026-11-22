@@ -398,6 +398,29 @@ wait_for_progress(unsigned count) {
 }
 
 static void
+test_recovery(void) {
+  write_text(SOURCE, "needs backup");
+  const char *config = SOURCE "\nbackup_notifications=errors\nbackup_notifications_in_game=true\n";
+  assert(!setenv("TEST_USB_FREE", "0", 1));
+  cycle_with_config(config);
+  assert(toast_count("Not enough USB space for backups.") == 1);
+  assert(!toast_count("Backup protection restored."));
+  assert(!setenv("TEST_USB_FREE", "1073741824", 1));
+  assert(run_cycle(0) == 0);
+  expect_file(BACKUP_ROOT SOURCE, "needs backup");
+  assert(toast_count("Backup protection restored.") == 1);
+  assert(run_cycle(0) == 0);
+  assert(toast_count("Backup protection restored.") == 1);
+
+  /* A repeated problem may escalate from a warning to an error. */
+  notification_issues_begin(0);
+  notify_problem(NOTICE_WARNING, "escalation", "disk", "First warning");
+  notify_problem(NOTICE_ERROR, "escalation", "disk", "Escalated error");
+  assert(toast_count("First warning") == 1);
+  assert(toast_count("Escalated error") == 1);
+}
+
+static void
 test_languages(void) {
   char buffer[2048];
   const char *original = "Backup complete (12MB).";
@@ -506,6 +529,7 @@ main(int argc, char **argv) {
   else if(!strcmp(argv[1], "snapshot")) test_snapshot();
   else if(!strcmp(argv[1], "progress")) test_progress();
   else if(!strcmp(argv[1], "language")) test_languages();
+  else if(!strcmp(argv[1], "recovery")) test_recovery();
   else if(!strcmp(argv[1], "concurrent")) test_concurrent();
   else abort();
 
