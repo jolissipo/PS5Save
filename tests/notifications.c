@@ -370,8 +370,8 @@ test_snapshot(void) {
   expect_file(BACKUP_ROOT SOURCE, "snapshot version");
   fail_readdir_path = NULL;
   cycle_with_config(SOURCE "\ndaily_snapshots_to_keep=2\nbackup_notifications=all\n");
-  assert(toast_count(NULL) == 2);
-  expect_toast(1, "Daily snapshot complete.");
+  assert(toast_count("Daily snapshot complete.") == 1);
+  assert(toast_count("snapshot could not be saved") == 1);
   assert(!toast_count(NO_CHANGES) && !toast_count(COPYING));
   expect_file(saved_file, "snapshot version");
 
@@ -379,7 +379,7 @@ test_snapshot(void) {
   cycle_with_config(config);
   expect_file(BACKUP_ROOT SOURCE, "new live version");
   expect_file(saved_file, "snapshot version");
-  assert(toast_count(NULL) == 2 && log_contains("created"));
+  assert(toast_count("Daily snapshot complete.") == 1 && log_contains("created"));
 }
 
 static void
