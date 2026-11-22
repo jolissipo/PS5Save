@@ -69,7 +69,7 @@ jobs:
           assert '#include "launcher_installer.c"' in main
           assert 'SYS_thr_set_name, -1, "ps5saveplus.elf"' in main
           assert f'#define PS5SAVE_RELEASE "v{version}"' in main
-          assert re.fullmatch(r"0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+", version)
+          assert re.fullmatch(r"0\.[0-9]+\.[0-9]+-alpha\.[0-9]+", version)
           PY
           node --check /tmp/ps5save-dashboard.js
 
@@ -92,7 +92,7 @@ jobs:
       - name: Cross-compile PS5Save+ ELF
         run: |
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
-          VERSION="$(tr -d '\\r\\n' < VERSION)"
+          VERSION="$(head -n 1 VERSION)"
           cp ps5saveplus.elf "ps5saveplus_v${VERSION}.elf"
           test -s ps5saveplus.elf
           test -s "ps5saveplus_v${VERSION}.elf"
