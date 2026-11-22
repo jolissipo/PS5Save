@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#define DASHBOARD_PORT 18755 /* Keep test traffic away from real service. */
 #define USB_ROOT TEST_ROOT "/usb"
 #define STORAGE_ROOT USB_ROOT "/ps5save-plus"
 #define CONF_PATH STORAGE_ROOT "/backup.conf"
@@ -413,8 +414,34 @@ static void test_config_editor(void) {
   puts("PASS browser-isolated pairing, PIN reuse, security lockout, config version and atomic writes");
 }
 
+/* Exercise real socket rebind after a simulated SIGCONT, not only helpers. */
+static void test_resume_http(void) {
+  dashboard_start();
+  /* The initial listener is created synchronously in dashboard_start. */
+  assert(!atomic_load(&dashboard_listener_restores));
+  dashboard_on_continue(SIGCONT);
+  for(int n=0; n<40 && !atomic_load(&dashboard_listener_restores); n++)
+    usleep(200000);
+  assert(atomic_load(&dashboard_listener_restores)>0);
+  int fd=socket(AF_INET,SOCK_STREAM,0);
+  assert(fd>=0);
+  struct sockaddr_in address={0};
+  address.sin_family=AF_INET;
+  address.sin_port=htons(DASHBOARD_PORT);
+  assert(inet_pton(AF_INET,"127.0.0.1",&address.sin_addr)==1);
+  assert(!connect(fd,(struct sockaddr*)&address,sizeof address));
+  const char request[]="GET /api/status HTTP/1.1\r\nHost: localhost:18755\r\n\r\n";
+  assert(send(fd,request,strlen(request),0)==(ssize_t)strlen(request));
+  char answer[1024]={0};
+  struct timeval timeout={.tv_sec=3,.tv_usec=0};
+  setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
+  ssize_t got=recv(fd,answer,sizeof answer-1,0);
+  assert(got>0 && strstr(answer,"200 OK"));
+  close(fd);
+  puts("PASS dashboard HTTP listener reopened after simulated resume");
+}
+
 int main(void) {
-  (void)dashboard_start; /* Production starts the socket; tests use socketpairs. */
   assert(!mkdir_p(USB_ROOT));
   assert(!mkdir_p(BACKUP_ROOT "/saves"));
   assert(!mkdir_p(DAILY_ROOT "/2026-11-22"));
@@ -455,6 +482,7 @@ int main(void) {
   test_usb_config_validation();
   test_config_editor();
   test_file_browser();
+  test_resume_http();
   puts("PASS dashboard endpoints, persisted history and write security");
   return 0;
 }
