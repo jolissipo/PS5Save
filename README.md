@@ -37,17 +37,17 @@ The server does not automatically open the PS5 browser or install an app icon. T
 
 ## Optional PS5 home-screen launcher (development only)
 
-A separate `launcher-installer-v3.elf` (built from `launcher_installer.c`) provides an **opt-in** PS5 home-screen icon that opens `http://127.0.0.1:8755/`.
+A separate `launcher-installer-v4.elf` (built from `launcher_installer.c`) provides an **opt-in** PS5 home-screen icon that opens `http://127.0.0.1:8755/`.
 
 - Build it with `make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk launcher-installer.elf`.
 - The installer is independent of the backup ELF; it is **never executed automatically**.
-- It uses dedicated title ID `P5SV00001` and writes only its own metadata under `/user/app/P5SV00001`. If that folder exists without the PS5Save+ ownership marker, installation is refused.
+- It uses dedicated title ID `PSSV00001` (four uppercase letters and five digits) and writes only its own metadata under `/user/app/PSSV00001`. If that folder exists without the PS5Save+ ownership marker, installation is refused.
 - The installer follows the small SDK example: it creates `/user/app/` when absent, prepares its own `sce_sys` assets and calls **only** `sceAppInstUtilAppInstallTitleDir()` for the PS5Save+ title. A previously successful installation is identified by a versioned local marker and its own files; a second execution then skips registration. Other application directories are never overwritten.
 - It uses cumulative **Debug notifications** for installation, registration and error codes, unlike the native backup notification transport. A failed attempt can be retried without a global application scan.
 - The tile opens the browser only; **it does not start the backup payload**. Execute `backup.elf` first.
 - The launcher currently reuses the existing 1024x1024 notification artwork; a distinct PS5Save+ icon can be prepared later.
 
-**The installer still requires a console test.** The previous ELF produced neither an icon nor a visible Debug notification. This revision reduces runtime dependencies, includes `libSceIpmi`, creates `/user/app/` if necessary (the exact missing-directory issue fixed in Payload Manager PR #108) and uses the same minimal `param.json` structure as Payload Manager and PS5 Web File Manager. Every attempted operation is written to `/mnt/usb0/ps5save-plus/launcher-installer.log` (or `/data/ps5save-plus-launcher.log` if the USB log is unavailable); the dashboard Overview tab exposes the USB log. A missing log after execution suggests that the ELF did not reach its first logging step, rather than proving the app-install API failed. **Compile success is not a runtime guarantee**. No one-click uninstall or rollback is available, and the optional installer remains separate from `backup.elf`.
+**The installer still requires a console test.** The former title ID `P5SV00001` was invalid for the PS5 homebrew title conventions because its first four characters included a digit; the new title ID is `PSSV00001`. This changes the install directory, and the old `/user/app/P5SV00001` is deliberately preserved without automatic cleanup. Executing the launcher never requires the backup daemon to be running.  The previous ELF produced neither an icon nor a visible Debug notification. This revision reduces runtime dependencies, includes `libSceIpmi`, creates `/user/app/` if necessary (the exact missing-directory issue fixed in Payload Manager PR #108) and uses the same minimal `param.json` structure as Payload Manager and PS5 Web File Manager. Every attempted operation is written to `/mnt/usb0/ps5save-plus/launcher-installer.log` (or `/data/ps5save-plus-launcher.log` if the USB log is unavailable); the dashboard Overview tab exposes the USB log. A missing log after execution suggests that the ELF did not reach its first logging step, rather than proving the app-install API failed. **Compile success is not a runtime guarantee**. No one-click uninstall or rollback is available, and the optional installer remains separate from `backup.elf`.
 
 ## Configuration
 
