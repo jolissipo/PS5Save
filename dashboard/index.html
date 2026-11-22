@@ -90,7 +90,7 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
  <div class="panel"><h2>Latest pass</h2><div id="passSummary" class="muted">Awaiting status…</div>
  <div class="stats"><span>Skipped: <b id="skipped">0</b></span><span>Failed: <b id="failed">0</b></span><span>Daily snapshot: <b id="snapshot">—</b></span></div></div>
  <div class="panel"><h2>Recent operations</h2><ul id="history" class="list"><li class="muted">No recorded operations yet.</li></ul></div>
- <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Show recent log entries</button><pre id="logs" hidden></pre></div>
+ <div class="panel"><h2>Diagnostics</h2><p class="small muted">Technical details are stored on the USB. Notifications remain the primary source of important warnings.</p><button class="secondary-button" id="viewLogs" type="button">Backup logs</button> <button class="secondary-button" id="installerLogs" type="button">Launcher installer logs</button><pre id="logs" hidden></pre></div>
 </section>
 <section id="backups" class="tab" hidden>
  <div class="panel" id="liveBackupPanel">
@@ -428,6 +428,14 @@ footer{color:#899ab3;font-size:12px;margin-top:23px;line-height:1.6}
   byId("viewLogs").addEventListener("click",function(){
     var el=byId("logs");el.hidden=false;el.textContent="Loading…";
     request("/api/logs").then(function(r){return r.text();}).then(function(s){el.textContent=s||"No recent entries.";}).catch(function(){el.textContent="No diagnostic logs are available.";});
+  });
+  byId("installerLogs").addEventListener("click",function(){
+    var el=byId("logs");el.hidden=false;el.textContent="Loading installer log…";
+    request("/api/installer-log").then(function(r){return r.text();}).then(function(s){
+      el.textContent=s||"No installer activity recorded.";
+    }).catch(function(){
+      el.textContent="No launcher-installer.log found on USB. Check that the correct installer ELF ran; if no file exists, the loader may have rejected it before execution.";
+    });
   });
   status();history();
   setInterval(status,12000);
