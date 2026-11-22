@@ -445,7 +445,7 @@ test_progress(void) {
   /* Change cadence with estimated remaining work, not fixed 25% steps. */
   assert(progress_interval_for(0, 10) == PROGRESS_INTERVAL_SECONDS);
   assert(progress_interval_for(90, 20) == PROGRESS_INTERVAL_SECONDS);
-  assert(progress_interval_for(10, 15) == 2 * PROGRESS_INTERVAL_SECONDS);
+  assert(progress_interval_for(10, 1.5) == 2 * PROGRESS_INTERVAL_SECONDS);
   assert(progress_interval_for(5, 30) == 3 * PROGRESS_INTERVAL_SECONDS);
 
   write_text(ACTIVITY_PATH, "PPSA12345\n");
