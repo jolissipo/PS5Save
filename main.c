@@ -308,9 +308,11 @@ static struct {
   const char *problem;
   char *subject;
   int observed;
+  notice_level_t level;
 } notification_issues[MAX_NOTIFICATION_ISSUES];
 static size_t next_notification_issue;
 static int notification_cycle_failed;
+static int notification_recovered;
 
 /* Escape every JSON control character and reject overflow rather than emit
  * truncated or malformed JSON. UTF-8 bytes are preserved. */
@@ -475,6 +477,10 @@ notify_problem(notice_level_t level, const char *problem, const char *subject,
     } else if(!strcmp(notification_issues[i].problem, problem) &&
               !strcmp(notification_issues[i].subject, subject)) {
       notification_issues[i].observed = 1;
+      /* An existing warning must not conceal a later escalation to error. */
+      if(level > notification_issues[i].level &&
+         notification_emit_locked(level, message))
+        notification_issues[i].level = level;
       goto done;
     }
   }
@@ -490,6 +496,7 @@ notify_problem(notice_level_t level, const char *problem, const char *subject,
   notification_issues[free_slot].problem = problem;
   notification_issues[free_slot].subject = saved_subject;
   notification_issues[free_slot].observed = 1;
+  notification_issues[free_slot].level = level;
 done:
   pthread_mutex_unlock(&notification_mutex);
 }
@@ -498,6 +505,7 @@ static void
 notification_issues_begin(int pending_only) {
   pthread_mutex_lock(&notification_mutex);
   notification_cycle_failed = 0;
+  notification_recovered = 0;
   if(!pending_only) {
     for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++)
       notification_issues[i].observed = 0;
@@ -508,13 +516,23 @@ notification_issues_begin(int pending_only) {
 static void
 notification_issues_end(void) {
   pthread_mutex_lock(&notification_mutex);
+  int resolved_error = 0;
+  int still_has_issues = 0;
   for(size_t i = 0; i < MAX_NOTIFICATION_ISSUES; i++) {
-    if(notification_issues[i].problem && !notification_issues[i].observed) {
+    if(!notification_issues[i].problem) continue;
+    if(!notification_issues[i].observed) {
+      if(notification_issues[i].level == NOTICE_ERROR)
+        resolved_error = 1;
       free(notification_issues[i].subject);
       notification_issues[i].subject = NULL;
       notification_issues[i].problem = NULL;
+    } else {
+      still_has_issues = 1;
     }
   }
+  /* Only claim full recovery when all previously reported problems cleared. */
+  notification_recovered = resolved_error && !still_has_issues &&
+                           !notification_cycle_failed;
   pthread_mutex_unlock(&notification_mutex);
 }
 
@@ -2629,6 +2647,18 @@ run_cycle(int pending_only) {
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
     /* No changes is the normal outcome; avoid repetitive popups. */
+  }
+
+  /* A previously reported failure has actually cleared. For normal mode,
+   * the success toast is sufficient when data was copied. In errors mode,
+   * report recovery explicitly instead of showing a second success toast.
+   */
+  if(notification_recovered && !stats.failed && !notification_cycle_failed &&
+     !stats.skipped && !g_cycle_deferred && snapshot_result >= 0 &&
+     (!live_work_started || notification_settings.mode == NOTICES_ERRORS)) {
+    pthread_mutex_lock(&notification_mutex);
+    notification_emit_locked(NOTICE_WARNING, "Backup protection restored.");
+    pthread_mutex_unlock(&notification_mutex);
   }
 
   return 0;
