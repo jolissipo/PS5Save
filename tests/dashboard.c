@@ -98,6 +98,120 @@ static void make_request(const char *request, const char *expected) {
   }
 }
 
+
+static void test_config_editor(void) {
+  const char *pair =
+    "POST /api/pair HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "Content-Length: 0\r\n\r\n";
+  make_request(pair, "200 OK");
+  assert(strstr(delivered_pair_message, "pairing code: "));
+  char code[7];
+  memcpy(code, strstr(delivered_pair_message, "pairing code: ") + strlen("pairing code: "), 6);
+  code[6] = 0;
+  assert(editor_code_valid(code));
+
+  char req[21000];
+  int n = snprintf(req, sizeof req,
+    "POST /api/unlock HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "Content-Length: 6\r\n\r\n"
+    "000000");
+  assert(n > 0 && (size_t)n < sizeof req);
+  /* A wrong code is not accepted. */
+  if(strcmp(code, "000000")) make_request(req, "403 Forbidden");
+  n = snprintf(req, sizeof req,
+    "POST /api/unlock HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "Content-Length: 6\r\n\r\n%s", code);
+  assert(n > 0 && (size_t)n < sizeof req);
+  make_request(req, "200 OK");
+  assert(strlen(editor_session) == 32);
+  make_request(req, "403 Forbidden"); /* Pairing code is one-use. */
+
+  const char *original = "backup_interval_seconds=300\nbackup_notifications=all\n";
+  char version[17];
+  snprintf(version, sizeof version, "%016llx",
+           (unsigned long long)editor_hash(original, strlen(original)));
+  make_request("GET /api/config-version HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               version);
+  const char *bad = "backup_interval_seconds=60\n/mnt/usb0/backup\n";
+  n = snprintf(req, sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "X-PS5Save-Session: %s\r\n"
+    "X-PS5Save-Version: %s\r\n"
+    "Content-Length: %zu\r\n\r\n%s",
+    editor_session, version, strlen(bad), bad);
+  assert(n > 0 && (size_t)n < sizeof req);
+  make_request(req, "422 Unprocessable Content");
+  FILE *verify = fopen(CONF_PATH, "rb");
+  assert(verify);
+  char contents[256];
+  size_t read = fread(contents, 1, sizeof contents - 1, verify);
+  assert(!fclose(verify));
+  contents[read] = 0;
+  assert(!strcmp(contents, original));
+
+  const char *updated = "backup_interval_seconds=60\nbackup_notifications=errors\n";
+  n = snprintf(req, sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "X-PS5Save-Session: 00000000000000000000000000000000\r\n"
+    "X-PS5Save-Version: %s\r\n"
+    "Content-Length: %zu\r\n\r\n%s",
+    version, strlen(updated), updated);
+  assert(n > 0 && (size_t)n < sizeof req);
+  make_request(req, "403 Forbidden");
+
+  n = snprintf(req, sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: localhost:8755\r\n"
+    "Origin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "X-PS5Save-Session: %s\r\n"
+    "X-PS5Save-Version: %s\r\n"
+    "Content-Length: %zu\r\n\r\n%s",
+    editor_session, version, strlen(updated), updated);
+  assert(n > 0 && (size_t)n < sizeof req);
+  make_request(req, "200 OK");
+  verify = fopen(CONF_PATH, "rb");
+  assert(verify);
+  read = fread(contents, 1, sizeof contents - 1, verify);
+  assert(!fclose(verify));
+  contents[read] = 0;
+  assert(!strcmp(contents, updated));
+
+  verify = fopen(CONF_PATH ".bak", "rb");
+  assert(verify);
+  read = fread(contents, 1, sizeof contents - 1, verify);
+  assert(!fclose(verify));
+  contents[read] = 0;
+  assert(!strcmp(contents, original));
+  make_request(req, "409 Conflict"); /* Old version must not overwrite edits. */
+
+  n = snprintf(req, sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: attacker.example:8755\r\n"
+    "Origin: http://attacker.example:8755\r\n"
+    "X-PS5Save-Request: 1\r\n"
+    "X-PS5Save-Session: %s\r\n"
+    "Content-Length: 0\r\n\r\n", editor_session);
+  assert(n > 0 && (size_t)n < sizeof req);
+  make_request(req, "400 Bad Request"); /* DNS rebinding protection. */
+  puts("PASS dashboard pairing, validation, atomic save and write protection");
+}
+
 int main(void) {
   (void)dashboard_start; /* Production starts the socket; tests use socketpairs. */
   assert(!mkdir_p(USB_ROOT));
@@ -131,6 +245,7 @@ int main(void) {
                "403 Forbidden");
   make_request("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
                "404 Not Found");
-  puts("PASS dashboard read-only endpoints and persistent history");
+  test_config_editor();
+  puts("PASS dashboard endpoints, persisted history and write security");
   return 0;
 }
