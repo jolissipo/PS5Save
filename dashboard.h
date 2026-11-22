@@ -321,6 +321,8 @@ static void dashboard_serve_backup_roots(int fd) {
   dashboard_respond(fd, 200, "text/plain; charset=utf-8", result, pos);
 }
 
+#include "dashboard_browser.h"
+
 static void dashboard_request(int fd) {
   /* Headers: 4 KiB maximum. Config body: another 16 KiB maximum.
    * Reject chunked requests and duplicate Content-Length fields. */
@@ -344,14 +346,16 @@ static void dashboard_request(int fd) {
     dashboard_text(fd, 400, "Invalid HTTP headers.");
     return;
   }
-  char method[8], path[128], version[16], host[96];
-  if(sscanf(req, "%7s %127s %15s", method, path, version) != 3 ||
+  char method[8], path[2048], version[16], host[96];
+  if(sscanf(req, "%7s %2047s %15s", method, path, version) != 3 ||
      strncmp(version, "HTTP/1.", 7) ||
      editor_header(req, "Host", host, sizeof host) != 1 ||
      !editor_valid_host(host)) {
     dashboard_text(fd, 400, "Invalid request host or path.");
     return;
   }
+  char *query = strchr(path, '?');
+  if(query) *query++ = 0;
   if(!strcmp(method, "GET")) {
     if(!strcmp(path, "/") || !strcmp(path, "/index.html")) {
       dashboard_respond(fd, 200, "text/html; charset=utf-8",
@@ -359,6 +363,8 @@ static void dashboard_request(int fd) {
     } else if(!strcmp(path, "/api/status")) dashboard_serve_status(fd);
     else if(!strcmp(path, "/api/snapshots")) dashboard_serve_snapshot_list(fd);
     else if(!strcmp(path, "/api/backups")) dashboard_serve_backup_roots(fd);
+    else if(!strcmp(path, "/api/tree")) browser_serve_tree(fd, query);
+    else if(!strcmp(path, "/api/summary")) browser_serve_summary(fd, query);
     else if(!strcmp(path, "/api/config")) dashboard_serve_file(fd, CONF_PATH);
     else if(!strcmp(path, "/api/config-version")) editor_serve_version(fd);
     else if(!strcmp(path, "/api/history")) dashboard_serve_file(fd, DASHBOARD_HISTORY);
