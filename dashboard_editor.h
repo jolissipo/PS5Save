@@ -1,6 +1,6 @@
 /* PS5Save+ optional edit capability. Physical-console pairing is required.
- * Only one short-lived in-memory session is supported. No passwords or tokens
- * are stored on USB, exposed in logs, or accepted in query strings.
+ * Independent short-lived browser sessions are stored only in process memory.
+ * No passwords or tokens are stored on USB, exposed in logs, or accepted in query strings.
  */
 #ifndef PS5SAVE_PLUS_EDITOR_H
 #define PS5SAVE_PLUS_EDITOR_H
@@ -9,12 +9,19 @@
 #define EDITOR_PIN_SECONDS 120.0
 #define EDITOR_SESSION_SECONDS 3600.0
 #define EDITOR_PAIR_COOLDOWN_SECONDS 60.0
+#define EDITOR_PAIR_RESEND_SECONDS 10.0
+#define EDITOR_MAX_SESSIONS 8
+
+typedef struct {
+  char token[33];
+  double expiry;
+} editor_session_t;
 
 static char editor_pin[7];
-static char editor_session[33];
+static editor_session_t editor_sessions[EDITOR_MAX_SESSIONS];
 static double editor_pin_expiry;
-static double editor_session_expiry;
 static double editor_last_pair = -999999.0;
+static double editor_last_notice = -999999.0;
 static double editor_locked_until;
 static unsigned editor_attempts;
 
@@ -115,33 +122,86 @@ static int editor_request_origin(const char *headers) {
   return n > 0 && (size_t)n < sizeof expected && !strcmp(origin, expected);
 }
 
-static int editor_authorized(const char *headers) {
-  char token[48];
-  if(editor_header(headers, "X-PS5Save-Session", token, sizeof token) != 1 ||
-     strlen(token) != 32 || now_seconds() >= editor_session_expiry ||
-     !editor_session[0]) return 0;
-  return editor_equals(token, editor_session, 32);
+/* Authorization is scoped to this browser's token, never to a global flag.
+ * A second successful pairing must not revoke an active editing session. */
+static int editor_session_valid(const char *token) {
+  if(!token || strlen(token) != 32) return 0;
+  double now = now_seconds();
+  for(int i = 0; i < EDITOR_MAX_SESSIONS; i++) {
+    editor_session_t *session = &editor_sessions[i];
+    if(session->token[0] && now >= session->expiry) {
+      memset(session, 0, sizeof *session);
+      continue;
+    }
+    if(session->token[0] && editor_equals(token, session->token, 32))
+      return 1;
+  }
+  return 0;
 }
 
-static void editor_start_pair(int fd) {
+static int editor_authorized(const char *headers) {
+  char token[48];
+  return editor_header(headers, "X-PS5Save-Session", token, sizeof token) == 1 &&
+         editor_session_valid(token);
+}
+
+static int editor_free_session_slot(void) {
   double now = now_seconds();
-  if(now < editor_last_pair + EDITOR_PAIR_COOLDOWN_SECONDS) {
-    dashboard_text(fd, 429, "Wait before requesting another pairing code.");
+  for(int i = 0; i < EDITOR_MAX_SESSIONS; i++) {
+    editor_session_t *session = &editor_sessions[i];
+    if(!session->token[0] || now >= session->expiry) {
+      memset(session, 0, sizeof *session);
+      return i;
+    }
+  }
+  return -1; /* Never evict another browser's active authorization. */
+}
+
+static void editor_session_status(int fd, const char *headers) {
+  if(editor_authorized(headers))
+    dashboard_text(fd, 200, "Editing already enabled in this browser.");
+  else
+    dashboard_text(fd, 403, "Editing session expired. Unlock editing again.");
+}
+
+static void editor_start_pair(int fd, const char *headers) {
+  double now = now_seconds();
+  if(editor_authorized(headers)) {
+    dashboard_text(fd, 409, "Editing already enabled in this browser.");
     return;
   }
   if(now < editor_locked_until) {
     dashboard_text(fd, 429, "Pairing temporarily locked.");
     return;
   }
-  uint32_t random;
-  if(!editor_random(&random, sizeof random)) {
-    dashboard_text(fd, 503, "Secure randomness unavailable.");
+  const int reuse = editor_pin[0] && now < editor_pin_expiry;
+  if(reuse && now < editor_last_notice + EDITOR_PAIR_RESEND_SECONDS) {
+    dashboard_text(fd, 429, "Wait briefly before resending the active pairing code.");
+    return;
+  }
+  if(!reuse && now < editor_last_pair + EDITOR_PAIR_COOLDOWN_SECONDS) {
+    dashboard_text(fd, 429, "Wait before requesting another pairing code.");
     return;
   }
   char code[7];
-  snprintf(code, sizeof code, "%06u", (unsigned)(random % 1000000u));
+  if(reuse) {
+    strcpy(code, editor_pin);
+  } else {
+    uint32_t random;
+    if(!editor_random(&random, sizeof random)) {
+      dashboard_text(fd, 503, "Secure randomness unavailable.");
+      return;
+    }
+    snprintf(code, sizeof code, "%06u", (unsigned)(random % 1000000u));
+  }
   char msg[120];
-  snprintf(msg, sizeof msg, "PS5Save+ pairing code: %s (valid for 2 min).", code);
+  if(reuse) {
+    unsigned remaining = (unsigned)(editor_pin_expiry - now) + 1;
+    snprintf(msg, sizeof msg, "PS5Save+ pairing code: %s (expires in %u sec).",
+             code, remaining);
+  } else {
+    snprintf(msg, sizeof msg, "PS5Save+ pairing code: %s (valid for 2 min).", code);
+  }
   pthread_mutex_lock(&notification_mutex);
   int sent = send_notification(msg); /* Explicit user request, even in off mode. */
   pthread_mutex_unlock(&notification_mutex);
@@ -149,11 +209,16 @@ static void editor_start_pair(int fd) {
     dashboard_text(fd, 503, "Could not display the pairing code on PS5.");
     return;
   }
-  strcpy(editor_pin, code);
-  editor_pin_expiry = now + EDITOR_PIN_SECONDS;
-  editor_last_pair = now;
-  editor_attempts = 0;
-  dashboard_text(fd, 200, "A six-digit pairing code was sent to the PS5.");
+  editor_last_notice = now;
+  if(!reuse) {
+    strcpy(editor_pin, code);
+    editor_pin_expiry = now + EDITOR_PIN_SECONDS;
+    editor_last_pair = now;
+    editor_attempts = 0;
+  }
+  dashboard_text(fd, 200, reuse ?
+    "The same pairing code was sent again; its original expiry is unchanged." :
+    "A six-digit pairing code was sent to the PS5.");
 }
 
 static void editor_unlock(int fd, const char *body, size_t len) {
@@ -175,21 +240,27 @@ static void editor_unlock(int fd, const char *body, size_t len) {
     dashboard_text(fd, 403, "Incorrect pairing code.");
     return;
   }
+  int slot = editor_free_session_slot();
+  if(slot < 0) {
+    dashboard_text(fd, 429, "Too many active editing sessions. Try again later.");
+    return;
+  }
   unsigned char random[16];
   if(!editor_random(random, sizeof random)) {
     dashboard_text(fd, 503, "Secure randomness unavailable.");
     return;
   }
   static const char hex[] = "0123456789abcdef";
+  editor_session_t *session = &editor_sessions[slot];
   for(size_t i = 0; i < sizeof random; i++) {
-    editor_session[2*i] = hex[random[i] >> 4];
-    editor_session[2*i+1] = hex[random[i] & 15];
+    session->token[2*i] = hex[random[i] >> 4];
+    session->token[2*i+1] = hex[random[i] & 15];
   }
-  editor_session[32] = 0;
-  editor_session_expiry = now + EDITOR_SESSION_SECONDS;
-  editor_pin[0] = 0; /* Single-use code. */
+  session->token[32] = 0;
+  session->expiry = now + EDITOR_SESSION_SECONDS;
+  editor_pin[0] = 0; /* Single-use code; earlier browser sessions stay active. */
   editor_attempts = 0;
-  dashboard_respond(fd, 200, "text/plain; charset=utf-8", editor_session, 32);
+  dashboard_respond(fd, 200, "text/plain; charset=utf-8", session->token, 32);
 }
 
 static uint64_t editor_hash(const char *content, size_t n) {
