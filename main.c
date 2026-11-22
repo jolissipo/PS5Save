@@ -718,7 +718,7 @@ typedef struct {
   char padding[45];
   char message[3075];
 } storage_debug_request_t;
-int sceKernelSendNotificationRequest(int, storage_debug_request_t *, size_t, int);
+int sceKernelSendNotificationRequest(int, void *, size_t, int);
 static void storage_debug(const char *message) {
   storage_debug_request_t request = {0};
   snprintf(request.message, sizeof request.message, "%s", message);
@@ -771,7 +771,7 @@ static int storage_default_config(void) {
     return -1;
   }
   logq("Created default configuration: %s", CONF_PATH);
-  storage_debug("PS5Save+: backup.conf criado com as definicoes padrao em ps5save-plus.");
+  storage_debug("PS5Save+: default backup.conf created in ps5save-plus.");
   return 1;
 }
 
