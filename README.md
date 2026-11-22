@@ -22,11 +22,11 @@ The backup service runs in the background while the payload remains active. Save
 ## Getting started
 
 1. Connect an **exFAT USB drive** with enough free space for your backups and snapshots.
-2. Download **`ps5saveplus_v0.1.0-alpha.5.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
+2. Download **`ps5saveplus_v0.1.0-alpha.6.elf`** from [Releases](https://github.com/jolissipo/PS5Save/releases) and launch it with your preferred PS5 payload loader.
 3. On first launch, PS5Save+ selects a mounted USB, creates `/mnt/usbN/ps5save-plus/backup.conf` if missing, checks for changes immediately and installs the dashboard shortcut if needed.
 4. Open the PS5Save+ shortcut, or use `http://<PS5-IP>:8755/` from a device on the same trusted network.
 
-To change settings, open **Settings → Unlock editing on PS5**, then enter the temporary code shown on the console. In **Backup USB drive**, select another mounted USB; the transfer starts after the current backup check finishes. The dashboard shows the active USB, available space and transfer progress. It remains accessible during a transfer, but editing is temporarily disabled.
+To change settings, open **Settings → Unlock editing on PS5**, then enter the temporary code shown on the console. In **Backup USB drive**, select another mounted USB; the transfer starts after the current backup check finishes. The dashboard shows the active USB, available space and transfer progress. It remains accessible during a transfer: Overview and Backups stay usable, while Settings is temporarily disabled.
 
 The shortcut opens the web dashboard; it **does not automatically restart the payload** after a console reboot.
 
