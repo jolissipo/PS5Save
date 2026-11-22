@@ -9,7 +9,9 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -413,8 +415,45 @@ static void test_config_editor(void) {
   puts("PASS browser-isolated pairing, PIN reuse, security lockout, config version and atomic writes");
 }
 
+static void test_http_recovery(void) {
+  /* End-to-end localhost check of the real listening thread after SIGCONT.
+   * Simulates the resume signal; a physical PS5 still needs standby QA. */
+  dashboard_start();
+  for(int pass=0;pass<3;pass++) {
+    int connected=0;
+    for(int retry=0;retry<20 && !connected;retry++) {
+      int fd=socket(AF_INET,SOCK_STREAM,0);
+      assert(fd>=0);
+      struct sockaddr_in to={0};
+      to.sin_family=AF_INET;
+      to.sin_port=htons(DASHBOARD_PORT);
+      assert(inet_pton(AF_INET,"127.0.0.1",&to.sin_addr)==1);
+      if(connect(fd,(struct sockaddr*)&to,sizeof to)==0) {
+        const char *req="GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:8755\r\n\r\n";
+        assert(send(fd,req,strlen(req),0)==(ssize_t)strlen(req));
+        struct timeval timeout={.tv_sec=2,.tv_usec=0};
+        setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
+        char response[2048];
+        ssize_t n=recv(fd,response,sizeof response-1,0);
+        if(n>0) {
+          response[n]=0;
+          connected=strstr(response,"200 OK")!=NULL;
+        }
+      }
+      close(fd);
+      if(!connected)usleep(200000);
+    }
+    assert(connected);
+    if(pass<2) {
+      assert(!raise(SIGCONT));
+      /* Let the worker observe the pending restart. */
+      usleep(2200000);
+    }
+  }
+  puts("PASS dashboard listener recovers after repeated SIGCONT and serves HTTP");
+}
+
 int main(void) {
-  (void)dashboard_start; /* Production starts the socket; tests use socketpairs. */
   assert(!mkdir_p(USB_ROOT));
   assert(!mkdir_p(BACKUP_ROOT "/saves"));
   assert(!mkdir_p(DAILY_ROOT "/2026-11-22"));
@@ -455,6 +494,7 @@ int main(void) {
   test_usb_config_validation();
   test_config_editor();
   test_file_browser();
+  test_http_recovery();
   puts("PASS dashboard endpoints, persisted history and write security");
   return 0;
 }
