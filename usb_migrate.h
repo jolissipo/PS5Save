@@ -168,10 +168,9 @@ static int usb_migrate_to_unlocked(const char *target) {
     return -1;
   }
   if(!strcmp(target, USB_ROOT)) return 0;
-  if(!storage_usb_online(USB_ROOT, NULL, NULL) ||
-     !usb_target_ready(target)) {
+  if(!storage_usb_online(USB_ROOT, NULL, NULL)) {
     snprintf(storage_move_error, sizeof storage_move_error,
-             "Destination USB unavailable or has insufficient free space.");
+             "Source USB is not mounted.");
     return -1;
   }
   char source[PATH_MAX], destination[PATH_MAX], stage[PATH_MAX];
@@ -188,18 +187,32 @@ static int usb_migrate_to_unlocked(const char *target) {
   }
   if(errno != ENOENT) return -1;
 
+  int recovering = 0;
   if(!lstat(stage, &st)) {
-    /* Never delete an unrecognised folder from someone else's USB. */
+    /* Recover only an owned partial transfer. Never delete unknown data. */
     char marker[PATH_MAX], contents[64] = "";
-    snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK);
-    FILE *f = fopen(marker, "r");
-    if(f) {fgets(contents, sizeof contents, f);fclose(f);}
-    if(strcmp(contents, USB_STAGE_MAGIC) || remove_tree(stage)) {
+    if(!S_ISDIR(st.st_mode) ||
+       snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK) >= (int)sizeof marker) {
       snprintf(storage_move_error, sizeof storage_move_error,
-               "Unexpected previous transfer directory; refusing to delete.");
+               "Unexpected transfer path; original preserved.");
       return -1;
     }
+    FILE *f = fopen(marker, "r");
+    if(f) {fgets(contents, sizeof contents, f);fclose(f);}
+    if(strcmp(contents, USB_STAGE_MAGIC)) {
+      snprintf(storage_move_error, sizeof storage_move_error,
+               "Unrecognized partial transfer; original preserved.");
+      return -1;
+    }
+    recovering = 1;
   } else if(errno != ENOENT) return -1;
+
+  if(!usb_target_ready(target, recovering ? stage : NULL)) {
+    snprintf(storage_move_error, sizeof storage_move_error,
+             "Destination USB unavailable or has insufficient free space.");
+    return -1;
+  }
+  if(recovering) logq("USB transfer: recovering staged files in %s", stage);
 
   /* Announce only after preflight checks have passed. Dynamic dashboard
    * status stays available throughout the copy and verification. */
@@ -210,34 +223,37 @@ static int usb_migrate_to_unlocked(const char *target) {
   atomic_store(&storage_migrating, 1);
   usb_transfer_notice(0, notice);
   int ok = 0;
-  if(!mkdir(stage, 0700)) {
+  if(recovering || !mkdir(stage, 0700)) {
     char marker[PATH_MAX];
     snprintf(marker, sizeof marker, "%s/%s", stage, USB_STAGE_MARK);
-    FILE *f = fopen(marker, "w");
-    if(f) {
-      int written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
-      if(fclose(f)) written = 0;
-      if(written) {
+    int written = recovering;
+    if(!recovering) {
+      FILE *f = fopen(marker, "w");
+      if(f) {
+        written = fputs(USB_STAGE_MAGIC, f) >= 0 && !fflush(f) && !fsync(fileno(f));
+        if(fclose(f)) written = 0;
+      }
+    }
+    if(written) {
 #ifndef PS5SAVE_USB_TEST
-        uint64_t size = dir_size(source);
-        progress_reset();
-        progress_plan(1);
-        /* Copy and byte-for-byte verification each contribute half. */
-        progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
-        progress_start(usb_progress_notification);
+      uint64_t size = dir_size(source);
+      progress_reset();
+      progress_plan(1);
+      /* Copy and byte-for-byte verification each contribute half. */
+      progress_begin(size && size <= UINT64_MAX / 2 ? size * 2 : 1);
+      progress_start(usb_progress_notification);
 #endif
-        int verified = !usb_transfer_tree(source, stage, 0) &&
-            !usb_verify_tree(source, stage, 0) &&
-            storage_usb_online(USB_ROOT, NULL, NULL) &&
-            storage_usb_online(target, NULL, NULL);
+      int verified = !usb_transfer_tree(source, stage, 0) &&
+          !usb_verify_tree(source, stage, 0) &&
+          storage_usb_online(USB_ROOT, NULL, NULL) &&
+          storage_usb_online(target, NULL, NULL);
 #ifndef PS5SAVE_USB_TEST
-        progress_finish();
-        progress_stop(); /* Join the worker before any terminal toast. */
+      progress_finish();
+      progress_stop(); /* Join the worker before any terminal toast. */
 #endif
-        if(verified) {
-          sync();
-          if(!rename(stage, destination)) ok = 1;
-        }
+      if(verified) {
+        sync();
+        if(!rename(stage, destination)) ok = 1;
       }
     }
   }
