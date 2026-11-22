@@ -430,7 +430,7 @@ static void test_resume_http(void) {
   address.sin_port=htons(DASHBOARD_PORT);
   assert(inet_pton(AF_INET,"127.0.0.1",&address.sin_addr)==1);
   assert(!connect(fd,(struct sockaddr*)&address,sizeof address));
-  const char request[]="GET /api/status HTTP/1.1\r\nHost: localhost:18755\r\n\r\n";
+  const char request[]="GET /api/status HTTP/1.1\r\nHost: localhost:8755\r\n\r\n";
   assert(send(fd,request,strlen(request),0)==(ssize_t)strlen(request));
   char answer[1024]={0};
   struct timeval timeout={.tv_sec=3,.tv_usec=0};
