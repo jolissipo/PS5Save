@@ -11,9 +11,13 @@ all: backup.elf
 backup.elf: main.c notification_icon.h backup_progress.h title_activity.h change_index.h dashboard.h dashboard_editor.h ps5save_i18n.h dashboard/index.html
 	$(CC) $(CFLAGS) main.c $(LDLIBS) -o $@
 
+# Optional, separate home-screen browser tile installer. Never run by default.
+launcher-installer.elf: launcher_installer.c launcher/param.json notification_icon.h
+	$(CC) $(CFLAGS) launcher_installer.c -lSceAppInstUtil -o $@
+
 .PHONY: all clean test
 test:
 	sh tests/run-host-tests.sh
 
 clean:
-	rm -f backup.elf
+	rm -f backup.elf launcher-installer.elf
