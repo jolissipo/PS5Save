@@ -131,6 +131,7 @@ int main(void) {
   make_dirs(first);make_dirs(second);
   assert(storage_usb_number(first)==0 && storage_usb_number(second)==1);
   assert(storage_requested_usb[0] == 0);
+  assert(atomic_load(&storage_migration_percent) == 0);
   assert(storage_usb_number("/data")==-1);
   assert(storage_usb_online(first,NULL,NULL));
   assert(storage_usb_online(second,NULL,NULL));
