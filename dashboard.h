@@ -6,6 +6,7 @@
 #define PS5SAVE_PLUS_DASHBOARD_H
 #include <signal.h>
 #include <stdatomic.h>
+#include <poll.h>
 #ifndef BACKUP_HOST_TEST
 
 #ifndef DASHBOARD_PORT
