@@ -166,7 +166,7 @@ int sceNotificationSend(int user_id, bool is_logged, const char *payload);
 #ifndef NOTIFICATION_ICON_DIR
 #define NOTIFICATION_ICON_DIR "/user/data/ps5save"
 #endif
-#define PS5SAVE_RELEASE "jolissipo-v1.1.0"
+#define PS5SAVE_RELEASE "PS5Save+ dev"
 #define NOTIFICATION_ICON_PATH NOTIFICATION_ICON_DIR "/notification-v3.png"
 
 static const char PS5SAVE_VERSION[] = PS5SAVE_RELEASE;
@@ -294,7 +294,7 @@ typedef struct {
   int in_game;
 } notification_settings_t;
 
-#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 1}
+#define DEFAULT_NOTIFICATION_SETTINGS {NOTICES_ALL, 0}
 static const notification_settings_t notification_defaults = DEFAULT_NOTIFICATION_SETTINGS;
 static notification_settings_t notification_settings = DEFAULT_NOTIFICATION_SETTINGS;
 
@@ -362,14 +362,14 @@ build_notification_payload(const char *message, const char *created_at,
     "{\"rawData\":{"
       "\"viewTemplateType\":\"ToastTemplateB\","
       "\"channelType\":\"SystemFeedback\","
-      "\"bundleName\":\"PS5Save\",\"useCaseId\":\"IDC\","
+      "\"bundleName\":\"PS5Save+\",\"useCaseId\":\"IDC\","
       "\"soundEffect\":\"none\",\"toastOverwriteType\":\"No\","
       "\"isImmediate\":true,\"priority\":100,"
       "\"viewData\":{"
         "\"icon\":{\"type\":\"Url\",\"parameters\":{"
           "\"url\":\"" NOTIFICATION_ICON_PATH "\"}},"
         "\"message\":{\"body\":\"%s\"},"
-        "\"subMessage\":{\"body\":\"PS5Save | %s\"}}},"
+        "\"subMessage\":{\"body\":\"PS5Save+ | %s\"}}},"
       "\"createdDateTime\":\"%s\",\"localNotificationId\":\"%s\"}",
     escaped, PS5SAVE_VERSION, created_at, id);
   free(escaped);
@@ -525,15 +525,44 @@ static void
 backup_activity_begin(const char *message) {
   if(!g_backup_busy) {
     g_backup_busy = 1;
-    notify_info("%s", message);
+    (void)message; /* Normal start is intentionally silent. */
     if(notification_allowed(NOTICE_INFO))
       progress_start(notify_progress);
   }
 }
 
 
+#ifndef BACKUP_HOST_TEST
+/* Best-effort bounded USB log. Never report a logging error through logq. */
+static pthread_mutex_t file_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void persist_log_line(const char *message) {
+  pthread_mutex_lock(&file_log_mutex);
+  const char *dir = USB_ROOT "/ps5save-plus";
+  const char *path = USB_ROOT "/ps5save-plus/events.log";
+  const char *old = USB_ROOT "/ps5save-plus/events.log.1";
+  if(!mkdir_p(dir)) {
+    struct stat st;
+    if(!stat(path, &st) && st.st_size >= 256 * 1024) {
+      unlink(old);
+      rename(path, old);
+    }
+    FILE *f = fopen(path, "a");
+    if(f) {
+      time_t now = time(NULL);
+      struct tm utc;
+      char date[32] = "";
+      if(gmtime_r(&now, &utc))
+        strftime(date, sizeof date, "%Y-%m-%dT%H:%M:%SZ", &utc);
+      fprintf(f, "%s %s\n", date, message);
+      fclose(f);
+    }
+  }
+  pthread_mutex_unlock(&file_log_mutex);
+}
+#endif
+
 /**
- * Quiet log: stdout and klog only, no on-screen notification.
+ * Quiet log: stdout, kernel log, and bounded persistent USB log.
  **/
 static void
 logq(const char *fmt, ...) {
@@ -547,6 +576,9 @@ logq(const char *fmt, ...) {
   printf("%s\n", msg);
   fflush(stdout);
   klog_printf("[backup] %s\n", msg);
+#ifndef BACKUP_HOST_TEST
+  persist_log_line(msg);
+#endif
 }
 
 
@@ -657,6 +689,8 @@ fs_free(const char *path, const char *test_env) {
 
 #define usb_free()   fs_free(USB_ROOT, "TEST_USB_FREE")
 #define data_free()  fs_free(TMP_DIR, "TEST_DATA_FREE")
+
+#include "dashboard.h"
 
 
 /**
@@ -2058,8 +2092,7 @@ backup_entry(char *line, backup_stats_t *stats) {
       while(end > line && end[-1] == '/') end--;
       const char *name = end;
       while(name > line && name[-1] != '/') name--;
-      notify_problem(NOTICE_WARNING, "empty-source", line, "No files to back up in %.*s.",
-                     (int)(end - name), name);
+      logq("No files to back up in %.*s.", (int)(end - name), name);
     }
   } else if(S_ISREG(st.st_mode)) {
     backup_file(line, dst, &st, stats);
@@ -2489,6 +2522,9 @@ run_cycle(int pending_only) {
     return -1;
   }
 
+#ifndef BACKUP_HOST_TEST
+  dashboard_set_running(1);
+#endif
   progress_reset();
   /* Apply the policy before sending the scan status, including when it is
    * declared after file paths in backup.conf. This pass reads only settings. */
@@ -2498,7 +2534,6 @@ run_cycle(int pending_only) {
     return -2;
   }
   notification_issues_begin(pending_only);
-  notify_info("Checking for backup changes.");
   index_load();
   g_pending_only = pending_only;
   g_cycle_deferred = 0;
@@ -2566,17 +2601,19 @@ run_cycle(int pending_only) {
   progress_stop();
   if(!pending_only && !g_cycle_deferred && !g_mount_stuck && !config_read_failed)
     notification_issues_end();
-
+#ifndef BACKUP_HOST_TEST
+  dashboard_cycle_done(&stats, g_cycle_deferred, snapshot_result,
+                       notification_cycle_failed || config_read_failed);
+#endif
 
   if(stats.failed || notification_cycle_failed) {
     logq("Backup incomplete (%u failed, %u copied)", stats.failed, stats.copied);
   } else if(g_cycle_deferred) {
     logq("Backup pass finished; protected titles queued (%u files unchanged)", stats.unchanged);
-    notify_info(live_work_started || snapshot_result > 0 ?
-                "Backup finished with deferred saves." : "Save backup deferred.");
+    /* A deferred save is expected while its title is protected. */
   } else if(stats.skipped || snapshot_result < 0) {
     logq("Backup pass finished with skips (%u files skipped)", stats.skipped);
-    if(live_work_started || snapshot_result > 0) notify_info("Backup finished. Some data was skipped.");
+    /* Specific warnings are already emitted by the affected operation. */
   } else if(live_work_started) {
     format_size(stats.bytes, size, sizeof size);
     logq("Copied %s in %.1f seconds.", size, now_seconds() - start);
@@ -2585,7 +2622,7 @@ run_cycle(int pending_only) {
     notify_info("Daily snapshot complete.");
   } else {
     logq("Backup up to date (%u files unchanged)", stats.unchanged);
-    if(!stats.empty_sources) notify_info("No changes. Backup not needed.");
+    /* No changes is the normal outcome; avoid repetitive popups. */
   }
 
   return 0;
@@ -2697,6 +2734,9 @@ main(void) {
     return EXIT_FAILURE;
   }
 
+#ifndef BACKUP_HOST_TEST
+  dashboard_start();
+#endif
   /* Initial backup immediately; subsequent regular deadlines use monotonic time. */
   started = now_seconds();
   int result = run_cycle(0);
@@ -2704,6 +2744,9 @@ main(void) {
     report_config_error(result);
     return EXIT_FAILURE;
   }
+  /* An initial successful pass is the only time we confirm startup. */
+  if(!notification_cycle_failed && !g_backup_busy && !g_cycle_deferred)
+    notify_info("Backup protection active.");
   if(g_daily > 0) {
     /* Log the date and UTC offset the payload sees. */
     clock_info_t ci;
