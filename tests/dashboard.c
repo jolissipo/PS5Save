@@ -44,6 +44,7 @@ static notification_settings_t notification_settings = { NOTICES_ALL, 0 };
 static long g_interval = 300;
 static pthread_mutex_t notification_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char delivered_pair_message[160];
+static unsigned delivered_pair_count;
 static double now_seconds(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -51,6 +52,7 @@ static double now_seconds(void) {
 }
 static int send_notification(const char *message) {
   snprintf(delivered_pair_message, sizeof delivered_pair_message, "%s", message);
+  delivered_pair_count++;
   return 1;
 }
 
@@ -188,6 +190,15 @@ static void test_config_editor(void) {
   memcpy(code, strstr(delivered_pair_message, "pairing code: ") + strlen("pairing code: "), 6);
   code[6] = 0;
   assert(editor_code_valid(code));
+  double original_expiry=editor_pin_expiry;
+  unsigned initial_notifications=delivered_pair_count;
+  make_request(pair, "Wait briefly before resending the active pairing code.");
+  assert(delivered_pair_count==initial_notifications);
+  editor_last_notice-=EDITOR_PAIR_RESEND_SECONDS;
+  make_request(pair, "The same pairing code was sent again");
+  assert(editor_pin_expiry==original_expiry);
+  assert(strstr(delivered_pair_message, code));
+  assert(strstr(delivered_pair_message, "expires in"));
 
   char req[21000];
   int n = snprintf(req, sizeof req,
@@ -199,7 +210,15 @@ static void test_config_editor(void) {
     "000000");
   assert(n > 0 && (size_t)n < sizeof req);
   /* A wrong code is not accepted. */
-  if(strcmp(code, "000000")) make_request(req, "403 Forbidden");
+  if(strcmp(code, "000000")){
+    make_request(req, "403 Forbidden");
+    assert(editor_attempts==1);
+  }
+  unsigned attempts_before_resend=editor_attempts;
+  editor_last_notice-=EDITOR_PAIR_RESEND_SECONDS;
+  make_request(pair, "The same pairing code was sent again");
+  assert(editor_attempts==attempts_before_resend);
+  assert(editor_pin_expiry==original_expiry);
   n = snprintf(req, sizeof req,
     "POST /api/unlock HTTP/1.1\r\n"
     "Host: localhost:8755\r\n"
@@ -208,8 +227,60 @@ static void test_config_editor(void) {
     "Content-Length: 6\r\n\r\n%s", code);
   assert(n > 0 && (size_t)n < sizeof req);
   make_request(req, "200 OK");
-  assert(strlen(editor_session) == 32);
+  assert(strlen(editor_sessions[0].token) == 32);
   make_request(req, "403 Forbidden"); /* Pairing code is one-use. */
+  char first_token[33];
+  strcpy(first_token, editor_sessions[0].token);
+  assert(editor_session_valid(first_token));
+
+  /* Already-paired browser is refused server-side; another browser is not. */
+  n=snprintf(req,sizeof req,
+    "POST /api/pair HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nX-PS5Save-Session: %s\r\n"
+    "Content-Length: 0\r\n\r\n",first_token);
+  assert(n>0 && (size_t)n<sizeof req);
+  unsigned before_rejected_pair=delivered_pair_count;
+  make_request(req,"409 Conflict");
+  assert(delivered_pair_count==before_rejected_pair);
+
+  /* A fresh browser is allowed to pair while the first remains authorized.
+   * Advance the rate-limit timestamp instead of sleeping for a full minute. */
+  make_request(pair, "Wait before requesting another pairing code.");
+  editor_last_pair-=EDITOR_PAIR_COOLDOWN_SECONDS;
+  make_request(pair, "200 OK");
+  char second_code[7];
+  memcpy(second_code,strstr(delivered_pair_message,"pairing code: ")+strlen("pairing code: "),6);
+  second_code[6]=0;
+  n=snprintf(req,sizeof req,
+    "POST /api/unlock HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nContent-Length: 6\r\n\r\n%s",second_code);
+  assert(n>0 && (size_t)n<sizeof req);
+  make_request(req,"200 OK");
+  char second_token[33];
+  strcpy(second_token,editor_sessions[1].token);
+  assert(editor_session_valid(first_token) && editor_session_valid(second_token));
+  assert(strcmp(first_token,second_token));
+
+  n=snprintf(req,sizeof req,
+    "POST /api/session HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nX-PS5Save-Session: %s\r\n"
+    "Content-Length: 0\r\n\r\n",first_token);
+  assert(n>0 && (size_t)n<sizeof req);
+  make_request(req,"Editing already enabled in this browser.");
+  n=snprintf(req,sizeof req,
+    "POST /api/session HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nX-PS5Save-Session: %s\r\n"
+    "Content-Length: 0\r\n\r\n",second_token);
+  assert(n>0 && (size_t)n<sizeof req);
+  make_request(req,"200 OK");
+  /* A real token is required; no information is disclosed to random clients. */
+  make_request("POST /api/session HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nContent-Length: 0\r\n\r\n", "403 Forbidden");
 
   const char *original = "backup_interval_seconds=300\nbackup_notifications=all\n";
   char version[17];
@@ -226,7 +297,7 @@ static void test_config_editor(void) {
     "X-PS5Save-Session: %s\r\n"
     "X-PS5Save-Version: %s\r\n"
     "Content-Length: %zu\r\n\r\n%s",
-    editor_session, version, strlen(bad), bad);
+    editor_sessions[0].token, version, strlen(bad), bad);
   assert(n > 0 && (size_t)n < sizeof req);
   make_request(req, "422 Unprocessable Content");
   FILE *verify = fopen(CONF_PATH, "rb");
@@ -258,7 +329,7 @@ static void test_config_editor(void) {
     "X-PS5Save-Session: %s\r\n"
     "X-PS5Save-Version: %s\r\n"
     "Content-Length: %zu\r\n\r\n%s",
-    editor_session, version, strlen(updated), updated);
+    editor_sessions[0].token, version, strlen(updated), updated);
   assert(n > 0 && (size_t)n < sizeof req);
   make_request(req, "200 OK");
   verify = fopen(CONF_PATH, "rb");
@@ -276,16 +347,70 @@ static void test_config_editor(void) {
   assert(!strcmp(contents, original));
   make_request(req, "409 Conflict"); /* Old version must not overwrite edits. */
 
+  /* The second browser can edit too, but its stale configuration is rejected. */
+  n=snprintf(req,sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nX-PS5Save-Session: %s\r\n"
+    "X-PS5Save-Version: %s\r\nContent-Length: %zu\r\n\r\n%s",
+    second_token,version,strlen(updated),updated);
+  assert(n>0 && (size_t)n<sizeof req);
+  make_request(req,"409 Conflict");
+  char newest_version[17];
+  snprintf(newest_version,sizeof newest_version,"%016llx",
+    (unsigned long long)editor_hash(updated,strlen(updated)));
+  const char *other_update="backup_interval_seconds=120\nbackup_notifications=errors\n";
+  n=snprintf(req,sizeof req,
+    "POST /api/config HTTP/1.1\r\n"
+    "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+    "X-PS5Save-Request: 1\r\nX-PS5Save-Session: %s\r\n"
+    "X-PS5Save-Version: %s\r\nContent-Length: %zu\r\n\r\n%s",
+    second_token,newest_version,strlen(other_update),other_update);
+  assert(n>0 && (size_t)n<sizeof req);
+  make_request(req,"200 OK");
+  assert(editor_session_valid(first_token) && editor_session_valid(second_token));
+
   n = snprintf(req, sizeof req,
     "POST /api/config HTTP/1.1\r\n"
     "Host: attacker.example:8755\r\n"
     "Origin: http://attacker.example:8755\r\n"
     "X-PS5Save-Request: 1\r\n"
     "X-PS5Save-Session: %s\r\n"
-    "Content-Length: 0\r\n\r\n", editor_session);
+    "Content-Length: 0\r\n\r\n", editor_sessions[0].token);
   assert(n > 0 && (size_t)n < sizeof req);
   make_request(req, "400 Bad Request"); /* DNS rebinding protection. */
-  puts("PASS dashboard pairing, validation, atomic save and write protection");
+
+  /* Expiring one session cannot revoke the other. */
+  editor_sessions[0].expiry=now_seconds()-1;
+  assert(!editor_session_valid(first_token));
+  assert(editor_session_valid(second_token));
+
+  /* An expired PIN is replaced, but it cannot be refreshed by resending. */
+  editor_last_pair-=EDITOR_PAIR_COOLDOWN_SECONDS;
+  make_request(pair,"200 OK");
+  editor_pin_expiry=now_seconds()-1;
+  editor_last_pair-=EDITOR_PAIR_COOLDOWN_SECONDS;
+  make_request(pair,"200 OK");
+  assert(editor_pin_expiry>now_seconds());
+  assert(editor_attempts==0);
+
+  /* Five incorrect codes lock subsequent resends/new PINs. */
+  char invalid[7]="000000";
+  if(!strcmp(invalid,editor_pin))strcpy(invalid,"999999");
+  for(int i=0;i<5;i++){
+    n=snprintf(req,sizeof req,
+      "POST /api/unlock HTTP/1.1\r\n"
+      "Host: localhost:8755\r\nOrigin: http://localhost:8755\r\n"
+      "X-PS5Save-Request: 1\r\nContent-Length: 6\r\n\r\n%s", invalid);
+    assert(n>0 && (size_t)n<sizeof req);
+    make_request(req,"403 Forbidden");
+  }
+  assert(editor_locked_until>now_seconds());
+  editor_last_notice-=EDITOR_PAIR_RESEND_SECONDS;
+  make_request(pair,"Pairing temporarily locked.");
+  assert(editor_session_valid(second_token));
+
+  puts("PASS browser-isolated pairing, PIN reuse, security lockout, config version and atomic writes");
 }
 
 int main(void) {
