@@ -63,4 +63,49 @@ assert.equal(changed,
 assert.match(html, /name="max_title_size_mb"[^>]*\brequired\b/);
 assert.match(html, /if\(!form\.checkValidity\(\)\)/);
 
-console.log("PASS dashboard loads existing USB/backup options and preserves them when changing USB");
+
+/* Test actual transfer tab logic with a minimal DOM, including transfer
+ * startup while Settings is visible and restoration after it completes. */
+const sections = {
+  settings: {hidden: false}, overview: {hidden: true},
+  preferences: {querySelectorAll: () => preferenceControls}
+};
+const preferenceControls = [{disabled: false}, {disabled: false}];
+function tab(name, pressed) {
+  return {
+    disabled: false,
+    attrs: {"data-tab": name, "aria-pressed": pressed},
+    getAttribute(key) { return this.attrs[key]; },
+    setAttribute(key, value) { this.attrs[key] = value; }
+  };
+}
+const overviewTab = tab("overview", "false");
+const settingsTab = tab("settings", "true");
+context.byId = id => sections[id];
+context.document = {
+  querySelector(selector) {
+    assert.equal(selector, 'nav button[data-tab="settings"]');
+    return settingsTab;
+  },
+  querySelectorAll(selector) {
+    assert.equal(selector, "nav button");
+    return [overviewTab, settingsTab];
+  }
+};
+vm.runInContext(
+  extractFunction("syncTransferEditing", "status"),
+  context, {filename: "dashboard-tabs.js"}
+);
+context.syncTransferEditing(true);
+assert.equal(settingsTab.disabled, true);
+assert.equal(sections.settings.hidden, true);
+assert.equal(sections.overview.hidden, false);
+assert.equal(settingsTab.getAttribute("aria-pressed"), "false");
+assert.equal(overviewTab.getAttribute("aria-pressed"), "true");
+assert.ok(preferenceControls.every(control => control.disabled));
+context.syncTransferEditing(false);
+assert.equal(settingsTab.disabled, false);
+assert.ok(preferenceControls.every(control => !control.disabled));
+assert.match(html, /if\(button\.disabled\)return;/);
+assert.match(html, /Settings is temporarily disabled\./);
+console.log("PASS dashboard configuration and USB-transfer Settings lock");

@@ -452,6 +452,38 @@ test_languages(void) {
                  "Sauvegarde terminée (12MB)."));
   test_console_language = 0; /* Japanese currently falls back to English. */
   assert(!strcmp(ps5_localize_notification(original, buffer, sizeof buffer), original));
+  /* All USB migration toasts use the same console-language lookup as backups.
+   * Preserve variable percentages and mount paths; English stays the log language. */
+  test_console_language = 7;
+  assert(!strcmp(ps5_localize_notification("USB transfer progress: 4%", buffer, sizeof buffer),
+                 "Progresso da transferência USB: 4%"));
+  assert(!strcmp(ps5_localize_notification("USB transfer complete.", buffer, sizeof buffer),
+                 "Transferência USB concluída."));
+  assert(!strcmp(ps5_localize_notification("Backup USB changed. Copying to /mnt/usb1.", buffer, sizeof buffer),
+                 "Unidade USB das cópias alterada. A copiar para /mnt/usb1."));
+  assert(!strcmp(ps5_localize_notification("USB transfer failed. See dashboard logs.", buffer, sizeof buffer),
+                 "Falha na transferência USB. Consulta os registos no dashboard."));
+  test_console_language = 17;
+  assert(!strcmp(ps5_localize_notification("USB transfer progress: 50%", buffer, sizeof buffer),
+                 "Progresso da transferência USB: 50%"));
+  test_console_language = 3;
+  assert(!strcmp(ps5_localize_notification("USB transfer complete.", buffer, sizeof buffer),
+                 "Transferencia USB completada."));
+  test_console_language = 2;
+  assert(!strcmp(ps5_localize_notification("USB transfer progress: 10%", buffer, sizeof buffer),
+                 "Progression du transfert USB : 10%"));
+  test_console_language = 4;
+  assert(!strcmp(ps5_localize_notification("USB transfer complete.", buffer, sizeof buffer),
+                 "USB-Übertragung abgeschlossen."));
+  test_console_language = 5;
+  assert(!strcmp(ps5_localize_notification("USB transfer complete.", buffer, sizeof buffer),
+                 "Trasferimento USB completato."));
+  test_console_language = 0;
+  assert(!strcmp(ps5_localize_notification("USB transfer progress: 4%", buffer, sizeof buffer),
+                 "USB transfer progress: 4%"));
+  test_console_language = 1;
+  assert(!strcmp(ps5_localize_notification("USB transfer complete.", buffer, sizeof buffer),
+                 "USB transfer complete."));
 }
 
 static void
