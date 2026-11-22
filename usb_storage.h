@@ -10,6 +10,7 @@
 
 static char storage_requested_usb[32] = "";
 static atomic_int storage_migrating;
+static pthread_mutex_t storage_change_lock = PTHREAD_MUTEX_INITIALIZER;
 static char storage_move_error[256] = "";
 
 static int storage_usb_number(const char *path) {
