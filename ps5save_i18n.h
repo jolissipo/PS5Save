@@ -85,7 +85,7 @@ static const ps5_translation_t ps5_translations[] = {
    "Échec du transfert USB. Consultez les journaux du tableau de bord.",
    "USB-Übertragung fehlgeschlagen. Dashboard-Protokolle prüfen.",
    "Trasferimento USB non riuscito. Controlla i log della dashboard.", 0},
-  {"Backup progress: "
+  {"Backup progress: ",
    "Progresso da cópia: ", "Progresso do backup: ",
    "Progreso de la copia: ", "Progression de la sauvegarde : ",
    "Backup-Fortschritt: ", "Avanzamento backup: ", 1},
