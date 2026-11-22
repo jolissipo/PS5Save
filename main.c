@@ -73,6 +73,7 @@ along with this program; see the file COPYING. If not, see
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -2596,6 +2597,10 @@ copy_tree(const char *src, const char *dst, uint64_t *bytes) {
 }
 
 
+#ifndef BACKUP_HOST_TEST
+#include "usb_migrate.h"
+#endif
+
 static int
 cmp_desc(const void *a, const void *b) {
   return strcmp((const char*)b, (const char*)a);
@@ -3051,6 +3056,14 @@ main(void) {
     report_config_error(result);
     return EXIT_FAILURE;
   }
+#ifndef BACKUP_HOST_TEST
+  if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+    notify_info("Moving backup storage to %s.", storage_requested_usb);
+    if(usb_migrate_to(storage_requested_usb))
+      notify_problem(NOTICE_WARNING, "usb-move", NULL,
+                     "Could not move backup storage: %s", storage_move_error);
+  }
+#endif
   /* An initial successful pass is the only time we confirm startup. */
   if(!notification_cycle_failed && !g_backup_busy)
     notify_info("Backup up to date. No changes.");
@@ -3096,6 +3109,13 @@ main(void) {
     cycles++;
 #endif
 
+#ifndef BACKUP_HOST_TEST
+    if(storage_requested_usb[0] && strcmp(storage_requested_usb, USB_ROOT)) {
+      if(usb_migrate_to(storage_requested_usb))
+        notify_problem(NOTICE_WARNING, "usb-move", NULL,
+                       "Could not move backup storage: %s", storage_move_error);
+    }
+#endif
     if(missing >= MISSING_TRIES) {
       logq("backup.conf is back");
     }
