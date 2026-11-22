@@ -38,7 +38,7 @@ static char storage_usb_path[PATH_MAX], storage_root_path[PATH_MAX],
 #define DAILY_ROOT storage_daily_path
 #include "../usb_storage.h"
 
-static int rebase_calls, save_calls, notification_calls;
+static int rebase_calls, save_calls, notification_calls, file_copy_calls;
 static int migration_started, migration_finished;
 static void progress_advance(size_t value) {(void)value;}
 static void logq(const char *format, ...) {(void)format;}
@@ -79,6 +79,7 @@ static void file_expect(const char *path,const char *expected){
 }
 static int copy_file_keep_time(const char *source,const char *target,
                                const struct stat *st) {
+  file_copy_calls++;
   int in=open(source,O_RDONLY),out=open(target,O_CREAT|O_TRUNC|O_WRONLY,0600);
   if(in<0||out<0)return -1;
   char buffer[256];ssize_t n;
@@ -156,12 +157,25 @@ int main(void) {
   snprintf(path,sizeof path,"%s/ps5save-plus",second);
   assert(!remove_tree(path));
 
-  /* Successful transfer verifies files and only then removes the source. */
+  /* Interrupted transfer: recognize an owned staging folder, reuse only a
+   * verified complete file and recopy the partial/absent files. */
   snprintf(path,sizeof path,"%s/ps5save-plus/backup_daily/2026-11-22",first);
   make_dirs(path);
   snprintf(path,sizeof path,"%s/ps5save-plus/backup_daily/2026-11-22/save.bin",first);
   file_write(path,"snapshot data");
+  snprintf(path,sizeof path,"%s/%s/backup",second,USB_STAGE_NAME);
+  make_dirs(path);
+  snprintf(path,sizeof path,"%s/%s/%s",second,USB_STAGE_NAME,USB_STAGE_MARK);
+  file_write(path,USB_STAGE_MAGIC);
+  snprintf(path,sizeof path,"%s/%s/backup/file.bin",second,USB_STAGE_NAME);
+  file_write(path,"USB0 user data");
+  snprintf(path,sizeof path,"%s/%s/backup_daily/2026-11-22",second,USB_STAGE_NAME);
+  make_dirs(path);
+  snprintf(path,sizeof path,"%s/%s/backup_daily/2026-11-22/save.bin",second,USB_STAGE_NAME);
+  file_write(path,"snapshot dat"); /* Incomplete file must be recopied. */
+  int copies_before_recovery=file_copy_calls;
   assert(!usb_migrate_to(second));
+  assert(file_copy_calls==copies_before_recovery+2); /* config and partial snapshot */
   assert(!strcmp(USB_ROOT,second));
   snprintf(path,sizeof path,"%s/ps5save-plus/backup/file.bin",second);
   file_expect(path,"USB0 user data");
