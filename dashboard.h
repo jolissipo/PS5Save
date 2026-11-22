@@ -447,7 +447,7 @@ static void dashboard_request(int fd) {
   }
   if(strcmp(method, "POST") ||
      (strcmp(path, "/api/pair") && strcmp(path, "/api/unlock") &&
-      strcmp(path, "/api/config"))) {
+      strcmp(path, "/api/session") && strcmp(path, "/api/config"))) {
     dashboard_text(fd, 405, "Method not allowed");
     return;
   }
@@ -475,7 +475,10 @@ static void dashboard_request(int fd) {
   }
   if(!strcmp(path, "/api/pair")) {
     if(needed) dashboard_text(fd, 400, "Pairing request must be empty.");
-    else editor_start_pair(fd);
+    else editor_start_pair(fd, req);
+  } else if(!strcmp(path, "/api/session")) {
+    if(needed) dashboard_text(fd, 400, "Session check must be empty.");
+    else editor_session_status(fd, req);
   } else if(!strcmp(path, "/api/unlock")) {
     char code[7] = "";
     if(needed != 6) {
