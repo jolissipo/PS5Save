@@ -170,7 +170,8 @@ test_legacy(void) {
   write_text(SOURCE, "original");
   write_text(ACTIVITY_PATH, "PPSA12345\n");
   cycle_with_config("  interval = 120 \r\n  max_game_mb = 64 \n"
-                    "dailybackups=0\nps4saves=false\nps5saves=false\n" SOURCE "\n");
+                    "dailybackups=0\nps4saves=false\nps5saves=false\n"
+                    "backup_notifications_in_game=true\n" SOURCE "\n");
   assert(g_interval == 120 && g_max_game == 64 * BYTES_PER_MB);
   assert(toast_count(NULL) == 1);
   expect_toast(0, "Backup complete");
