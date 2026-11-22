@@ -55,10 +55,14 @@ jobs:
           assert "explorers={" in p.scripts[0], "Backup trees must have independent navigation state"
           pathlib.Path("/tmp/ps5save-dashboard.js").write_text(p.scripts[0], encoding="utf-8")
           j = json.loads(pathlib.Path("launcher/param.json").read_text(encoding="utf-8"))
-          assert j["titleId"] == "P5SV00001"
+          assert j["titleId"] == "PSSV00001"
           assert j["deeplinkUri"] == "http://127.0.0.1:8755/"
           assert set(j) == {"titleId", "applicationCategoryType", "deeplinkUri", "localizedParameters"}, "Launcher must use proven minimal metadata"
           assert j["applicationCategoryType"] == 65536
+          import re
+          assert re.fullmatch(r"[A-Z]{4}[0-9]{5}", j["titleId"]), "PS5 app IDs must be four capital letters and five digits"
+          installer = pathlib.Path("launcher_installer.c").read_text(encoding="utf-8")
+          assert '#define LAUNCHER_ID "' + j["titleId"] + '"' in installer, "Installer title ID does not match param.json"
           assert j["localizedParameters"]["en-US"]["titleName"] == "PS5Save+"
           PY
           node --check /tmp/ps5save-dashboard.js
@@ -84,20 +88,20 @@ jobs:
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
           make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk" launcher-installer.elf
           # A versioned artifact avoids accidentally executing a stale installer.
-          cp launcher-installer.elf launcher-installer-v3.elf
+          cp launcher-installer.elf launcher-installer-v4.elf
           test -s backup.elf
-          test -s launcher-installer-v3.elf
-          file backup.elf launcher-installer-v3.elf
+          test -s launcher-installer-v4.elf
+          file backup.elf launcher-installer-v4.elf
           readelf -h backup.elf | head -n 28
-          readelf -h launcher-installer-v3.elf | head -n 28
+          readelf -h launcher-installer-v4.elf | head -n 28
           echo 'Installer runtime dependencies:'
-          readelf -d launcher-installer-v3.elf | grep NEEDED || true
+          readelf -d launcher-installer-v4.elf | grep NEEDED || true
       - name: Upload development ELF for inspection (not a release)
         uses: actions/upload-artifact@v4
         with:
           name: ps5save-plus-development-elf
           path: |
             backup.elf
-            launcher-installer-v3.elf
+            launcher-installer-v4.elf
           if-no-files-found: error
           retention-days: 5
