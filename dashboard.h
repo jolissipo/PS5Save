@@ -492,50 +492,137 @@ static void dashboard_request(int fd) {
   }
 }
 
+/* A process can survive PS5 standby while its TCP listen socket does not.
+ * SIGCONT only sets a flag: socket operations and logging stay in this worker.
+ * A network-address change and accept/poll failures also force a fresh bind.
+ * Backup checks and USB migration never depend on the dashboard listener. */
+static volatile sig_atomic_t dashboard_resume_pending;
+
+static void dashboard_sigcont(int sig) {
+  (void)sig;
+  dashboard_resume_pending=1;
+}
+
+static uint64_t dashboard_ipv4_signature(void) {
+  struct ifaddrs *ifas=NULL;
+  if(getifaddrs(&ifas)) return UINT64_MAX; /* Don't mistake an API failure for a network event. */
+  uint64_t result=0;
+  for(struct ifaddrs *p=ifas;p;p=p->ifa_next) {
+    if(!p->ifa_addr || p->ifa_addr->sa_family!=AF_INET)continue;
+    uint32_t ip=ntohl(((struct sockaddr_in*)p->ifa_addr)->sin_addr.s_addr);
+    if((ip>>24)==127)continue; /* Localhost must not trigger restarts. */
+    result+=(uint64_t)ip*UINT64_C(0x9e3779b185ebca87);
+  }
+  freeifaddrs(ifas);
+  return result;
+}
+
+static int dashboard_open_listener(void) {
+  int fd=socket(AF_INET, SOCK_STREAM, 0);
+  if(fd<0)return -1;
+  int one=1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+  struct sockaddr_in addr={0};
+  addr.sin_family=AF_INET;
+  addr.sin_port=htons(DASHBOARD_PORT);
+  addr.sin_addr.s_addr=htonl(INADDR_ANY);
+  if(bind(fd,(struct sockaddr*)&addr,sizeof addr) || listen(fd,8)) {
+    int err=errno;
+    close(fd);
+    errno=err;
+    return -1;
+  }
+  return fd;
+}
+
 static void *dashboard_worker(void *arg) {
-  int server = (int)(intptr_t)arg;
+  int server=(int)(intptr_t)arg;
+  uint64_t last_network=dashboard_ipv4_signature();
+  double next_network_check=now_seconds()+5;
+  unsigned failures=0;
   for(;;) {
-    int client = accept(server, NULL, NULL);
-    if(client < 0) {
-      if(errno == EINTR) continue;
-      break;
+    int restart=0;
+    if(dashboard_resume_pending) {
+      dashboard_resume_pending=0;
+      logq("Dashboard: console resumed; reopening HTTP listener on TCP %d",DASHBOARD_PORT);
+      restart=1;
     }
-    struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    double now=now_seconds();
+    if(now>=next_network_check) {
+      next_network_check=now+5;
+      uint64_t current=dashboard_ipv4_signature();
+      if(current!=UINT64_MAX && last_network!=UINT64_MAX && current!=last_network) {
+        logq("Dashboard: network changed; reopening HTTP listener on TCP %d",DASHBOARD_PORT);
+        restart=1;
+      }
+      if(current!=UINT64_MAX)last_network=current;
+    }
+    if(restart && server>=0) {
+      close(server);
+      server=-1;
+    }
+    if(server<0) {
+      server=dashboard_open_listener();
+      if(server<0) {
+        /* Retry without killing the resident payload or disabling backups. */
+        if(++failures==1 || failures%30==0)
+          logq("Dashboard: HTTP listener recovery pending on TCP %d: %s",
+               DASHBOARD_PORT,strerror(errno));
+        poll(NULL,0,1000);
+        continue;
+      }
+      failures=0;
+      logq("Dashboard: HTTP listener available again on TCP %d",DASHBOARD_PORT);
+    }
+
+    struct pollfd pfd={.fd=server,.events=POLLIN};
+    int ready=poll(&pfd,1,1000);
+    if(ready<0 && errno==EINTR)continue;
+    if(ready<0 || (ready>0 && (pfd.revents&(POLLERR|POLLHUP|POLLNVAL)))) {
+      logq("Dashboard: listener error; reopening TCP %d",DASHBOARD_PORT);
+      close(server);
+      server=-1;
+      continue;
+    }
+    if(ready<=0 || !(pfd.revents&POLLIN))continue;
+    int client=accept(server,NULL,NULL);
+    if(client<0) {
+      if(errno==EINTR || errno==EAGAIN)continue;
+      logq("Dashboard: accept failed; reopening HTTP listener: %s",strerror(errno));
+      close(server);
+      server=-1;
+      continue;
+    }
+    struct timeval timeout={.tv_sec=2,.tv_usec=0};
+    setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
+    setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);
     dashboard_request(client);
     close(client);
   }
-  close(server);
   return NULL;
 }
 
 static void dashboard_start(void) {
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if(fd < 0) return;
-  int one = 1;
-  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  struct sockaddr_in addr = {0};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(DASHBOARD_PORT);
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  if(bind(fd, (struct sockaddr *)&addr, sizeof addr) ||
-     listen(fd, 8)) {
+  int fd=dashboard_open_listener();
+  if(fd<0) {
     logq("PS5Save+ dashboard unavailable on TCP %d: %s",
-         DASHBOARD_PORT, strerror(errno));
-    close(fd);
+         DASHBOARD_PORT,strerror(errno));
     return;
   }
+  struct sigaction action={0};
+  action.sa_handler=dashboard_sigcont;
+  sigemptyset(&action.sa_mask);
+  if(sigaction(SIGCONT,&action,NULL))
+    logq("Dashboard: SIGCONT handler unavailable: %s",strerror(errno));
   pthread_t thread;
-  int rc = pthread_create(&thread, NULL, dashboard_worker,
-                          (void *)(intptr_t)fd);
+  int rc=pthread_create(&thread,NULL,dashboard_worker,(void*)(intptr_t)fd);
   if(rc) {
-    logq("PS5Save+ dashboard thread unavailable: %s", strerror(rc));
+    logq("PS5Save+ dashboard thread unavailable: %s",strerror(rc));
     close(fd);
     return;
   }
   pthread_detach(thread);
-  logq("PS5Save+ dashboard listening on TCP %d (read-only)", DASHBOARD_PORT);
+  logq("PS5Save+ dashboard listening on TCP %d (read-only)",DASHBOARD_PORT);
 }
 #endif /* !BACKUP_HOST_TEST */
 #endif /* PS5SAVE_PLUS_DASHBOARD_H */
