@@ -37,7 +37,7 @@ The server does not automatically open the PS5 browser or install an app icon. T
 
 ## Optional PS5 home-screen launcher (development only)
 
-A separate `launcher-installer.elf` provides an **opt-in** PS5 home-screen icon that opens `http://127.0.0.1:8755/`.
+A separate `launcher-installer-v3.elf` (built from `launcher_installer.c`) provides an **opt-in** PS5 home-screen icon that opens `http://127.0.0.1:8755/`.
 
 - Build it with `make PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk launcher-installer.elf`.
 - The installer is independent of the backup ELF; it is **never executed automatically**.
