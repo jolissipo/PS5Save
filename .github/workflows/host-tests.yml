@@ -1,4 +1,4 @@
-name: PS5Save+ host tests
+name: PS5Save+ validation
 on:
   push:
     branches:
@@ -24,3 +24,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run host tests
         run: sh tests/run-host-tests.sh
+
+  ps5-sdk-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PS5 SDK toolchain prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang lld unzip
+      - name: Download official PS5 Payload SDK v0.50
+        run: |
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "$RUNNER_TEMP/sdk.zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/v0.50/ps5-payload-sdk.zip"
+          unzip -q "$RUNNER_TEMP/sdk.zip" -d "$RUNNER_TEMP/sdk"
+          test -f "$RUNNER_TEMP/sdk/ps5-payload-sdk/toolchain/prospero.mk"
+      - name: Cross-compile PS5Save+ ELF
+        run: |
+          make PS5_PAYLOAD_SDK="$RUNNER_TEMP/sdk/ps5-payload-sdk"
+          test -s backup.elf
+          file backup.elf
+          readelf -h backup.elf | head -n 28
+      - name: Upload development ELF for inspection (not a release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps5save-plus-development-elf
+          path: backup.elf
+          if-no-files-found: error
+          retention-days: 5
