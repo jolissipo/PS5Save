@@ -442,13 +442,11 @@ test_languages(void) {
 
 static void
 test_progress(void) {
-  unsigned milestone = 0;
-  assert(!progress_milestone(24, &milestone));
-  assert(progress_milestone(25, &milestone));
-  assert(!progress_milestone(49, &milestone));
-  assert(progress_milestone(80, &milestone) && milestone == 3);
-  assert(!progress_milestone(99, &milestone));
-  assert(!progress_milestone(100, &milestone));
+  /* Change cadence with estimated remaining work, not fixed 25% steps. */
+  assert(progress_interval_for(0, 10) == PROGRESS_INTERVAL_SECONDS);
+  assert(progress_interval_for(90, 20) == PROGRESS_INTERVAL_SECONDS);
+  assert(progress_interval_for(10, 15) == 2 * PROGRESS_INTERVAL_SECONDS);
+  assert(progress_interval_for(5, 30) == 3 * PROGRESS_INTERVAL_SECONDS);
 
   write_text(ACTIVITY_PATH, "PPSA12345\n");
   cycle_with_config("backup_notifications_in_game=false\n");
@@ -459,16 +457,20 @@ test_progress(void) {
   double started = now_seconds();
   progress_start(record_progress);
   wait_for_progress(1);
-  assert(now_seconds() - started >= 0.95 && !toast_count(NULL) && log_contains("25%"));
+  assert(now_seconds() - started >= 0.95 && !toast_count(NULL) && log_contains("35%"));
   write_text(ACTIVITY_PATH, "");
   progress_advance(30);
   wait_for_progress(2);
-  assert(toast_count(NULL) == 1 && toast_count("50%") == 1);
+  assert(toast_count(NULL) == 1 && toast_count("65%") == 1);
   assert(toast_times[0] - started >= 1.95);
   progress_advance(20);
   wait_for_progress(3);
-  assert(toast_count(NULL) == 2 && toast_count("75%") == 1);
+  assert(toast_count(NULL) == 2 && toast_count("85%") == 1);
   assert(toast_times[1] - toast_times[0] >= 0.95);
+  /* Unchanged percent must not produce another toast. */
+  struct timespec wait = {.tv_sec=1, .tv_nsec=200000000};
+  nanosleep(&wait, NULL);
+  assert(atomic_load(&progress_attempts) == 3);
   progress_finish();
   progress_stop();
   assert(!progress_live && !toast_count("100%"));
