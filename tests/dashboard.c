@@ -332,6 +332,22 @@ static void test_config_editor(void) {
     "Content-Length: %zu\r\n\r\n%s",
     editor_sessions[0].token, version, strlen(updated), updated);
   assert(n > 0 && (size_t)n < sizeof req);
+  /* A valid browser token cannot write while a backup check is running.
+   * Status and read-only configuration must still be accessible. */
+  dashboard_set_running(1);
+  make_request("GET /api/status HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               "\"running\":true");
+  make_request("GET /api/config HTTP/1.1\r\nHost: localhost:8755\r\n\r\n",
+               original);
+  make_request(req, "409 Conflict");
+  FILE *blocked = fopen(CONF_PATH, "rb");
+  assert(blocked);
+  char during[256];
+  size_t nb = fread(during, 1, sizeof during - 1, blocked);
+  assert(!fclose(blocked));
+  during[nb] = 0;
+  assert(!strcmp(during, original));
+  dashboard_set_running(0);
   make_request(req, "200 OK");
   verify = fopen(CONF_PATH, "rb");
   assert(verify);
